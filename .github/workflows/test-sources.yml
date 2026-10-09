@@ -16,8 +16,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install playwright==1.44.0
-          python -m playwright install --with-deps chromium
+          pip install playwright
+          python -m playwright install chromium
+          python -m playwright install-deps chromium
 
       - name: Check sources
         run: python scripts/test_sources.py
