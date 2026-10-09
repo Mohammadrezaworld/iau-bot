@@ -1,0 +1,9 @@
+name = "iaut-bot"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+account_id = "REDACTED_ACCOUNT_ID"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "iaut-db"
+database_id = "REPLACE_ME"
