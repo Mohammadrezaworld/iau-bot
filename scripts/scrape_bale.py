@@ -11,6 +11,7 @@ import sys
 from playwright.sync_api import sync_playwright
 
 from quiet import in_quiet_hours
+from send_to_worker import send_posts
 
 CHANNELS = ["iaut_fani", "iautcom"]
 TIME_RE = re.compile(r"\d{1,2}:\d{2}")
@@ -71,7 +72,6 @@ def main() -> int:
         print(json.dumps({"skipped": "quiet_hours"}, ensure_ascii=False))
         return 0
 
-    all_posts = []
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         context = browser.new_context(
@@ -82,14 +82,16 @@ def main() -> int:
         page = context.new_page()
         for ch in CHANNELS:
             try:
-                all_posts.extend(fetch_channel(page, ch))
+                posts = fetch_channel(page, ch)
             except Exception as exc:  # noqa: BLE001
-                print(f"ERROR channel={ch} type={type(exc).__name__}", file=sys.stderr)
+                print(f"ERROR fetch channel={ch} type={type(exc).__name__}", file=sys.stderr)
+                continue
+            try:
+                result = send_posts("bale", ch, posts)
+                print(f"channel={ch} fetched={len(posts)} result={result}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"ERROR send channel={ch} type={type(exc).__name__}", file=sys.stderr)
         browser.close()
-
-    digest = hashlib.sha1(json.dumps(all_posts, sort_keys=True).encode()).hexdigest()[:10]
-    print(json.dumps({"count": len(all_posts), "digest": digest, "posts": all_posts},
-                     ensure_ascii=False))
     return 0
 
 
