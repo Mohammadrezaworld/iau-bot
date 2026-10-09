@@ -1,0 +1,25 @@
+name: scrape-telegram
+
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install httpx beautifulsoup4
+
+      - name: Scrape Telegram channels
+        working-directory: scripts
+        run: python scrape_telegram.py
