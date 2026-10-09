@@ -3,7 +3,6 @@
 خروجی: JSON لیست پست‌ها روی stdout.
 """
 
-import hashlib
 import json
 import sys
 
@@ -11,6 +10,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from quiet import in_quiet_hours
+from send_to_worker import send_posts
 
 CHANNELS = ["fanniBultan"]
 HEADERS = {
@@ -53,16 +53,17 @@ def main() -> int:
         print(json.dumps({"skipped": "quiet_hours"}, ensure_ascii=False))
         return 0
 
-    all_posts = []
     for ch in CHANNELS:
         try:
-            all_posts.extend(fetch_channel(ch))
+            posts = fetch_channel(ch)
         except Exception as exc:  # noqa: BLE001
-            print(f"ERROR channel={ch} type={type(exc).__name__}", file=sys.stderr)
-
-    digest = hashlib.sha1(json.dumps(all_posts, sort_keys=True).encode()).hexdigest()[:10]
-    print(json.dumps({"count": len(all_posts), "digest": digest, "posts": all_posts},
-                     ensure_ascii=False))
+            print(f"ERROR fetch channel={ch} type={type(exc).__name__}", file=sys.stderr)
+            continue
+        try:
+            result = send_posts("telegram", ch, posts)
+            print(f"channel={ch} fetched={len(posts)} result={result}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"ERROR send channel={ch} type={type(exc).__name__}", file=sys.stderr)
     return 0
 
 

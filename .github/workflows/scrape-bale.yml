@@ -30,4 +30,6 @@ jobs:
 
       - name: Scrape Bale channels
         working-directory: scripts
+        env:
+          INGEST_SECRET: ${{ secrets.INGEST_SECRET }}
         run: python scrape_bale.py
