@@ -9,8 +9,8 @@ import sys
 from playwright.sync_api import sync_playwright
 
 SOURCES = [
-    "https://ble.ir/iaut_fani",
-    "https://ble.ir/iautcom",
+    "https://ble.ir/s/iaut_fani",
+    "https://ble.ir/s/iautcom",
     "https://t.me/s/fanniBultan",
 ]
 
