@@ -1,0 +1,9 @@
+name = "iaut-bot"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+account_id = "c222c6e6cea3c9a98481e1f06079fd5d"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "iaut-db"
+database_id = "REPLACE_ME"
