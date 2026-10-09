@@ -80,19 +80,22 @@ def main() -> int:
             timezone_id="Asia/Tehran",
         )
         page = context.new_page()
+        failed = 0
         for ch in CHANNELS:
             try:
                 posts = fetch_channel(page, ch)
             except Exception as exc:  # noqa: BLE001
                 print(f"ERROR fetch channel={ch} type={type(exc).__name__}", file=sys.stderr)
+                failed += 1
                 continue
             try:
                 result = send_posts("bale", ch, posts)
                 print(f"channel={ch} fetched={len(posts)} result={result}")
             except Exception as exc:  # noqa: BLE001
                 print(f"ERROR send channel={ch} type={type(exc).__name__}", file=sys.stderr)
+                failed += 1
         browser.close()
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

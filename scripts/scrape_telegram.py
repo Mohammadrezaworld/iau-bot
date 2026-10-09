@@ -53,18 +53,21 @@ def main() -> int:
         print(json.dumps({"skipped": "quiet_hours"}, ensure_ascii=False))
         return 0
 
+    failed = 0
     for ch in CHANNELS:
         try:
             posts = fetch_channel(ch)
         except Exception as exc:  # noqa: BLE001
             print(f"ERROR fetch channel={ch} type={type(exc).__name__}", file=sys.stderr)
+            failed += 1
             continue
         try:
             result = send_posts("telegram", ch, posts)
             print(f"channel={ch} fetched={len(posts)} result={result}")
         except Exception as exc:  # noqa: BLE001
             print(f"ERROR send channel={ch} type={type(exc).__name__}", file=sys.stderr)
-    return 0
+            failed += 1
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
