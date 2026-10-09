@@ -19,12 +19,14 @@ TIME_RE = re.compile(r"\d{1,2}:\d{2}")
 
 def check(page, url: str) -> None:
     try:
-        response = page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-        page.wait_for_timeout(5_000)
+        response = page.goto(url, wait_until="networkidle", timeout=90_000)
+        page.wait_for_timeout(8_000)
         status = response.status if response else "no-response"
         body = page.evaluate("() => document.body ? document.body.innerText : ''")
+        title = page.title()
         times = len(TIME_RE.findall(body))
-        print(f"{url} | status={status} | body_chars={len(body)} | time_tokens={times}")
+        print(f"{url} | status={status} | title={title!r} | body_chars={len(body)} | time_tokens={times}")
+        print(f"  body_preview={body[:200]!r}")
     except Exception as exc:  # noqa: BLE001
         print(f"{url} | ERROR={type(exc).__name__}")
 
