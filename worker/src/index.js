@@ -4,6 +4,7 @@ import { handleAdminMessage, parseCmd, PUBLIC_CMDS, runPublic } from "./commands
 import { getSetting } from "./public.js";
 import { sendReminders } from "./reminders.js";
 import { handleCallback } from "./wizard.js";
+import { flushPosts } from "./channels.js";
 import { isAdmin } from "./admin.js";
 import { buildBackup } from "./admin.js";
 import { sendJsonDocument } from "./telegram.js";
@@ -33,13 +34,17 @@ async function handleIngest(request, env) {
 
   let newCount = 0;
   const ts = nowUtc();
+  // اولین اجرای این کانال: پست‌های موجود فقط علامت می‌خورن و چیزی فرستاده نمی‌شه
+  const prev = await env.DB.prepare("SELECT COUNT(*) AS n FROM scrape_runs WHERE source = ? AND channel = ?")
+    .bind(source, channel).first();
+  const firstRun = !prev || prev.n === 0;
   for (const p of posts) {
     const res = await env.DB.prepare(
       `INSERT OR IGNORE INTO posts
-         (source, channel, post_id, text, image_url, first_seen_utc)
-       VALUES (?, ?, ?, ?, ?, ?)`
+         (source, channel, post_id, text, image_url, first_seen_utc, sent_at_utc)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
     )
-      .bind(source, channel, String(p.post_id), String(p.text || ""), String(p.image_url || ""), ts)
+      .bind(source, channel, String(p.post_id), String(p.text || ""), String(p.image_url || ""), ts, firstRun ? ts : null)
       .run();
     if (res.meta && res.meta.changes > 0) newCount += 1;
   }
@@ -51,7 +56,15 @@ async function handleIngest(request, env) {
     .bind(source, channel, ts, newCount)
     .run();
 
-  return json({ ok: true, received: posts.length, new: newCount });
+  let delivered = null;
+  if (!firstRun && newCount > 0) {
+    try {
+      delivered = await flushPosts(env, source, channel);
+    } catch (err) {
+      console.error("flush_error", err && err.message ? err.message : "unknown");
+    }
+  }
+  return json({ ok: true, received: posts.length, new: newCount, delivered });
 }
 
 async function isOurGroup(env, chatId) {
@@ -127,7 +140,10 @@ export default {
     ctx.waitUntil(
       (async () => {
         try {
-          if (event.cron === "30 20 * * *") {
+          if (event.cron === "30 2 * * *") {
+            // ۰۶:۰۰ تهران: پست‌های دوره‌ی خواب یک‌جا
+            await flushPosts(env);
+          } else if (event.cron === "30 20 * * *") {
             const backup = await buildBackup(env);
             await sendJsonDocument(env, env.OWNER_ID, "iaut-backup.json", backup, "پشتیبان روزانه");
           } else {
