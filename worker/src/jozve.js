@@ -88,11 +88,12 @@ function grid(buttons, tail = []) {
 const TABLE = { note: "jozve_files", exam: "exam_files" };
 const CB = { note: { c: "j:c:", f: "j:f:" }, exam: { c: "j:ec:", f: "j:ef:" } };
 const TITLE = { note: "جزوه‌ها", exam: "نمونه‌سوال" };
-const DEFAULT_CATEGORY = "سایر";
-const CATEGORY_ORDER = ["دروس عمومی", "معارف", "دروس اختصاصی", DEFAULT_CATEGORY];
+// درس‌هایی که دسته ندارن، دروس اختصاصی حساب می‌شن (جدول‌ها: عمومی، معارف و پایه جدا ثبت شدن)
+const DEFAULT_CATEGORY = "دروس اختصاصی";
+const CATEGORY_ORDER = ["دروس عمومی", "معارف", "دروس پایه", "دروس اختصاصی"];
 const MAX_CATEGORY_BYTES = 40;
 
-// دسته‌ی هر درس (از جدول course_categories)؛ درسی که دسته نداره زیر «سایر» میاد
+// دسته‌ی هر درس (از جدول course_categories)؛ درسی که دسته نداره زیر «دروس اختصاصی» میاد
 async function categoryMap(env) {
   const { results } = await env.DB.prepare("SELECT course, category FROM course_categories").all();
   return new Map(results.map((r) => [r.course, r.category]));
