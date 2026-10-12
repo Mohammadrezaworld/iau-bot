@@ -4,6 +4,7 @@ import { handleAdminMessage, parseCmd, PUBLIC_CMDS, runPublic } from "./commands
 import { getSetting } from "./public.js";
 import { sendReminders } from "./reminders.js";
 import { handleCallback } from "./wizard.js";
+import { handleKeywordCallback } from "./keywords.js";
 import { flushPosts } from "./channels.js";
 import { isAdmin } from "./admin.js";
 import { buildBackup } from "./admin.js";
@@ -113,6 +114,7 @@ async function handleTelegramWebhook(request, env) {
         if (await isOurGroup(env, cq.message.chat.id)) await handleMetroCallback(env, cq);
       } else if (cq.message.chat.type === "private" && (await isAdmin(env, cq.from.id))) {
         if (data.startsWith("mu:")) await handleMetroUploadCallback(env, cq);
+        else if (data.startsWith("kw:")) await handleKeywordCallback(env, cq);
         else await handleCallback(env, cq);
       }
       return new Response("ok", { status: 200 });

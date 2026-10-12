@@ -8,7 +8,7 @@ const CHANNEL_LABELS = {
   "telegram:fanniBultan": "تلگرام – بولتن دانشکده",
 };
 
-const DEFAULT_KEYWORDS = ["نخواهد شد", "نخواهند شد", "برگزار نمی", "تعطیل", "لغو", "حذف", "اضافه", "مجوز", "امتحان", "انتخاب واحد", "ثبت‌نام", "اطلاعیه", "اصلاحیه", "تغییر", "تایم", "ساعت"];
+export const DEFAULT_KEYWORDS = ["نخواهد شد", "نخواهند شد", "برگزار نمی", "تعطیل", "لغو", "حذف", "اضافه", "مجوز", "امتحان", "انتخاب واحد", "ثبت‌نام", "اطلاعیه", "اصلاحیه", "تغییر", "تایم", "ساعت"];
 const MAX_CHUNK = 3000;
 
 const nowUtc = () => Math.floor(Date.now() / 1000);
@@ -31,7 +31,7 @@ export function inTehranQuietHours(now = Date.now()) {
   return hour >= 2 && hour < 6;
 }
 
-async function keywordsList(env) {
+export async function keywordsList(env) {
   const raw = await getSetting(env, "keywords", "");
   if (!raw) return DEFAULT_KEYWORDS;
   try { return JSON.parse(raw); } catch { return DEFAULT_KEYWORDS; }
