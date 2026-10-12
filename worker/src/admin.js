@@ -65,3 +65,12 @@ export async function logText(env) {
     })
     .join("\n");
 }
+
+// سطح دسترسی: owner (مالک)، full (همه‌ی دستورها)، content (فقط محتوا). ادمین بدون ردیف، full حساب می‌شه.
+export async function getRole(env, userId) {
+  if (String(userId) === String(env.OWNER_ID)) return "owner";
+  const row = await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id = ?").bind(userId).first();
+  if (row) return row.role;
+  const admin = await env.DB.prepare("SELECT user_id FROM admins WHERE user_id = ?").bind(userId).first();
+  return admin ? "full" : null;
+}

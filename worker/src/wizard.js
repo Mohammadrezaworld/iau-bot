@@ -121,6 +121,19 @@ export async function handleCallback(env, cq) {
   const data = cq.data || "";
   const answer = (text = "") => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text });
 
+  // انتخاب سطح دسترسی ادمین جدید (فقط مالک)
+  if (data.startsWith("adm:")) {
+    if (String(userId) !== String(env.OWNER_ID)) return answer();
+    const [, role, id] = data.split(":");
+    if (!["full", "content"].includes(role) || !/^\d{5,15}$/.test(id || "")) return answer();
+    await env.DB.prepare("INSERT OR IGNORE INTO admins (user_id, is_owner) VALUES (?, 0)").bind(Number(id)).run();
+    await env.DB.prepare("INSERT INTO admin_roles (user_id, role) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET role = excluded.role")
+      .bind(Number(id), role).run();
+    await audit(env, userId, "admin_add", `${id}:${role}`);
+    await answer("ثبت شد");
+    return tg(env, "sendMessage", { chat_id: chatId, text: `ادمین ${id} با سطح ${role === "full" ? "کامل" : "محتوا"} اضافه شد.` });
+  }
+
   if (data.startsWith("rm:") || data.startsWith("rmy:")) {
     const [prefix, type, id] = data.split(":");
     const table = { event: "events", call: "contacts", link: "resources" }[type];
