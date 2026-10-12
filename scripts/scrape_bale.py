@@ -10,7 +10,6 @@ import sys
 
 from playwright.sync_api import sync_playwright
 
-from quiet import in_quiet_hours
 from send_to_worker import send_posts
 
 CHANNELS = ["iaut_fani", "iautcom"]
@@ -68,10 +67,6 @@ def fetch_channel(page, channel: str) -> list[dict]:
 
 
 def main() -> int:
-    if in_quiet_hours():
-        print(json.dumps({"skipped": "quiet_hours"}, ensure_ascii=False))
-        return 0
-
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         context = browser.new_context(

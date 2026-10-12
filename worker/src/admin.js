@@ -36,6 +36,12 @@ export async function statusText(env) {
   const unsent = await count("SELECT COUNT(*) AS n FROM posts WHERE sent_at_utc IS NULL");
   const admins = await count("SELECT COUNT(*) AS n FROM admins");
   const holidays = await count("SELECT COUNT(*) AS n FROM holidays");
+  const events = await count("SELECT COUNT(*) AS n FROM events WHERE archived = 0");
+  const contacts = await count("SELECT COUNT(*) AS n FROM contacts");
+  const links = await count("SELECT COUNT(*) AS n FROM resources");
+  const { keywordsList } = await import("./channels.js");
+  const keywords = (await keywordsList(env)).length;
+  const metroRows = (await env.DB.prepare("SELECT key FROM settings WHERE key LIKE 'metro_active_%'").all()).results.length;
   const { results: runs } = await env.DB.prepare(
     `SELECT source, channel, ran_at_utc, new_count, ok FROM scrape_runs
      WHERE id IN (SELECT MAX(id) FROM scrape_runs GROUP BY source, channel)`
@@ -48,6 +54,8 @@ export async function statusText(env) {
     `پست‌های ذخیره‌شده: ${posts} (ارسال‌نشده: ${unsent})`,
     `ادمین‌ها: ${admins + 1} نفر (شامل مالک)`,
     `تعطیلات ثبت‌شده: ${holidays}`,
+    `رویدادهای فعال: ${events} · شماره‌ها: ${contacts} · لینک‌ها: ${links}`,
+    `کلمات کلیدی: ${keywords} · جدول مترو فعال: ${metroRows} از ۲`,
     "آخرین اسکرپ‌ها:",
     ...runLines,
   ].join("\n");

@@ -2,13 +2,16 @@
 import { tg, sendMessage } from "./telegram.js";
 import { audit, getRole } from "./admin.js";
 import { keywordsList, normalizeForMatch } from "./channels.js";
+import { pushUndo } from "./undo.js";
 
 const MAX_LEN = 30;
 // callback_data حداکثر ۶۴ بایته؛ پیشوند «kw:y:» ۵ بایته، پس کلمه تا ۵۰ بایت (UTF-8)
 const MAX_BYTES = 50;
 const bytes = (s) => new TextEncoder().encode(s).length;
 
-async function save(env, list) {
+async function save(env, list, label) {
+  const prev = await env.DB.prepare("SELECT value FROM settings WHERE key = 'keywords'").first();
+  await pushUndo(env, label, "setting", "keywords", prev ? prev.value : null);
   await env.DB.prepare(
     "INSERT INTO settings (key, value) VALUES ('keywords', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
   ).bind(JSON.stringify(list)).run();
@@ -31,7 +34,7 @@ export async function keywordCommand(env, chatId, userId, cmd, arg) {
     if (w.length > MAX_LEN || bytes(w) > MAX_BYTES) return sendMessage(env, chatId, `حداکثر ${MAX_LEN} حرف`);
     const nk = normalizeForMatch(w);
     if (list.some((k) => normalizeForMatch(k) === nk)) return sendMessage(env, chatId, "این کلمه از قبل هست.");
-    await save(env, [...list, w]);
+    await save(env, [...list, w], `افزودن کلمه‌ی «${w}»`);
     await audit(env, userId, "keyword_add", w);
     return sendMessage(env, chatId, `کلمه «${w}» اضافه شد. از پست‌های بعدی اعمال می‌شه.`);
   }
@@ -47,7 +50,7 @@ export async function keywordCommand(env, chatId, userId, cmd, arg) {
   }
   const target = list.find((k) => normalizeForMatch(k) === normalizeForMatch(w));
   if (!target) return sendMessage(env, chatId, "این کلمه پیدا نشد. /keyword_list رو بزن.");
-  await save(env, list.filter((k) => k !== target));
+  await save(env, list.filter((k) => k !== target), `حذف کلمه‌ی «${target}»`);
   await audit(env, userId, "keyword_remove", target);
   return sendMessage(env, chatId, `کلمه «${target}» حذف شد.`);
 }
@@ -80,7 +83,7 @@ export async function handleKeywordCallback(env, cq) {
     const list = await keywordsList(env);
     const target = list.find((k) => k === w);
     if (!target) return answer("این کلمه دیگه نیست");
-    await save(env, list.filter((k) => k !== target));
+    await save(env, list.filter((k) => k !== target), `حذف کلمه‌ی «${target}»`);
     await audit(env, cq.from.id, "keyword_remove", target);
     await answer("حذف شد");
     return sendMessage(env, chatId, `کلمه «${target}» حذف شد.`);

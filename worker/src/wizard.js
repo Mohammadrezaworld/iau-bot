@@ -62,11 +62,28 @@ function summary(flow, data) {
   return `دسته: ${data.category}\nعنوان: ${data.title}\nلینک: ${data.url}${data.note ? "\nیادداشت: " + data.note : ""}`;
 }
 
+// دسته‌های موجود به‌صورت دکمه (فقط برای شماره و لینک)؛ نام جدید هم با تایپ قابل وارده
+async function categoryButtons(env, flow) {
+  const table = flow === "call" ? "contacts" : "resources";
+  const { results } = await env.DB.prepare(`SELECT DISTINCT category FROM ${table} ORDER BY category LIMIT 12`).all();
+  const cats = results.map((r) => r.category).filter((c) => new TextEncoder().encode(c).length <= 50);
+  if (!cats.length) return null;
+  const rows = [];
+  for (let k = 0; k < cats.length; k += 2) {
+    rows.push(cats.slice(k, k + 2).map((c) => ({ text: c, callback_data: `w:cat:${c}` })));
+  }
+  return { inline_keyboard: rows };
+}
+
 async function askStep(env, chatId, flow, step) {
   const s = FLOWS[flow][step];
   const opts = {};
   if (s.buttons === "kind") opts.reply_markup = kindButtons();
   else if (s.optional) opts.reply_markup = skipButton;
+  else if (s.key === "category" && (flow === "call" || flow === "link")) {
+    const m = await categoryButtons(env, flow);
+    if (m) opts.reply_markup = m;
+  }
   return tg(env, "sendMessage", { chat_id: chatId, text: s.prompt, ...opts });
 }
 
@@ -98,6 +115,7 @@ export async function handleWizardText(env, message) {
   if (!sess) return false;
   const text = normalizeDigits((message.text || "").trim());
   if (text.startsWith("/")) { await clearSession(env, userId); return false; }
+  if (sess.flow === "edit") return handleEditText(env, message, sess, text);
 
   const s = FLOWS[sess.flow][sess.step];
   if (!s) return false;
@@ -114,12 +132,87 @@ export async function handleWizardText(env, message) {
   return true;
 }
 
-// دکمه‌ها: w:skip, w:kind:<k>, w:ok, w:cancel، و حذف: rm:<type>:<id> و rmy:<type>:<id>
+// ویرایش شماره یا لینک: مقدار جدید فیلد انتخابی
+const EDIT_FIELDS = {
+  call: { category: ["دسته", (t) => t.length >= 2], name: ["نام", (t) => t.length >= 2], number: ["شماره", (t) => /^[0-9+\-]{6,20}$/.test(t.replace(/\s/g, ""))], note: ["یادداشت", () => true] },
+  link: { category: ["دسته", (t) => t.length >= 2], title: ["عنوان", (t) => t.length >= 2], url: ["لینک", (t) => /^https:\/\/\S+$/.test(t)], note: ["یادداشت", () => true] },
+};
+const EDIT_TABLE = { call: "contacts", link: "resources" };
+const EDIT_COLUMN_OK = { call: ["category", "name", "number", "note"], link: ["category", "title", "url", "note"] };
+
+export async function editList(env, chatId, type) {
+  const table = EDIT_TABLE[type];
+  const { results } = await env.DB.prepare(`SELECT * FROM ${table} ORDER BY id DESC LIMIT 20`).all();
+  if (!results.length) return sendMessage(env, chatId, "چیزی برای ویرایش نیست.");
+  const rows = results.map((r) => {
+    const label = type === "call" ? r.name : r.title;
+    return [{ text: `✏️ ${label}`.slice(0, 60), callback_data: `ed:p:${type}:${r.id}` }];
+  });
+  return tg(env, "sendMessage", { chat_id: chatId, text: "کدوم ویرایش بشه؟", reply_markup: { inline_keyboard: rows } });
+}
+
+async function handleEditText(env, message, sess, text) {
+  const d = JSON.parse(sess.data);
+  const [label, ok] = EDIT_FIELDS[d.type][d.field];
+  const chatId = message.chat.id;
+  const value = d.field === "note" && (text === "بدون یادداشت" || text === "-") ? "" : text;
+  if (!ok(value)) {
+    await sendMessage(env, chatId, `${label} درست نیست. دوباره بفرست.`);
+    return true;
+  }
+  const normalized = d.field === "number" ? value.replace(/\s/g, "") : value;
+  await env.DB.prepare(`UPDATE ${EDIT_TABLE[d.type]} SET ${d.field} = ? WHERE id = ?`).bind(normalized, Number(d.id)).run();
+  await audit(env, message.from.id, `${d.type}_edit_${d.field}`, String(d.id));
+  await clearSession(env, message.from.id);
+  await sendMessage(env, chatId, `${label} ویرایش شد.`);
+  return true;
+}
+
+// دکمه‌ها: w:skip, w:kind:<k>, w:ok, w:cancel، دسته: w:cat:<نام>، ویرایش: ed:p:<type>:<id> و ed:f:<type>:<id>:<field>
+// و حذف: rm:<type>:<id> و rmy:<type>:<id>
 export async function handleCallback(env, cq) {
   const userId = cq.from.id;
   const chatId = cq.message.chat.id;
   const data = cq.data || "";
   const answer = (text = "") => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text });
+
+  if (data.startsWith("ed:")) {
+    const parts = data.split(":");
+    if (parts[1] === "p") {
+      const [, , type, id] = parts;
+      if (!EDIT_TABLE[type]) return answer();
+      const row = await env.DB.prepare(`SELECT id FROM ${EDIT_TABLE[type]} WHERE id = ?`).bind(Number(id)).first();
+      if (!row) return answer("این مورد دیگه نیست");
+      await answer();
+      const fields = EDIT_COLUMN_OK[type].map((f) => ({
+        text: EDIT_FIELDS[type][f][0], callback_data: `ed:f:${type}:${id}:${f}`,
+      }));
+      return tg(env, "sendMessage", {
+        chat_id: chatId, text: "کدوم فیلد عوض بشه؟",
+        reply_markup: { inline_keyboard: [fields.slice(0, 2), fields.slice(2)] },
+      });
+    }
+    if (parts[1] === "f") {
+      const [, , type, id, field] = parts;
+      if (!EDIT_FIELDS[type] || !EDIT_FIELDS[type][field]) return answer();
+      await saveSession(env, userId, "edit", 0, { type, id, field });
+      await answer();
+      return tg(env, "sendMessage", {
+        chat_id: chatId,
+        text: `مقدار جدید «${EDIT_FIELDS[type][field][0]}» رو بفرست${field === "note" ? " (یا «بدون یادداشت»)" : ""}.`,
+        reply_markup: { inline_keyboard: [[{ text: "لغو", callback_data: "w:cancel" }]] },
+      });
+    }
+    return answer();
+  }
+
+  if (data.startsWith("w:cat:")) {
+    const sess = await getSession(env, userId);
+    const cat = data.slice(6);
+    if (!sess || !FLOWS[sess.flow] || FLOWS[sess.flow][sess.step]?.key !== "category") return answer("این جریان دیگه فعال نیست");
+    await answer();
+    return advance(env, userId, chatId, sess, cat);
+  }
 
   // انتخاب سطح دسترسی ادمین جدید (فقط مالک)
   if (data.startsWith("adm:")) {
