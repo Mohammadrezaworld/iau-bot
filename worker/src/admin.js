@@ -1,0 +1,67 @@
+// دسترسی ادمین، لاگ تغییرات و پشتیبان. فقط در DM و فقط برای شناسه‌های مجاز.
+
+const nowUtc = () => Math.floor(Date.now() / 1000);
+
+export async function isAdmin(env, userId) {
+  if (String(userId) === String(env.OWNER_ID)) return true;
+  const row = await env.DB.prepare("SELECT user_id FROM admins WHERE user_id = ?").bind(userId).first();
+  return !!row;
+}
+
+export async function isOwner(env, userId) {
+  return String(userId) === String(env.OWNER_ID);
+}
+
+export async function audit(env, actorId, action, detail = "") {
+  await env.DB.prepare(
+    "INSERT INTO audit_log (at_utc, actor_id, action, detail) VALUES (?, ?, ?, ?)"
+  )
+    .bind(nowUtc(), Number(actorId), action, String(detail).slice(0, 500))
+    .run();
+}
+
+export async function buildBackup(env) {
+  const tables = ["settings", "admins", "holidays", "links", "phones", "audit_log"];
+  const out = { created_utc: nowUtc() };
+  for (const t of tables) {
+    const { results } = await env.DB.prepare(`SELECT * FROM ${t}`).all();
+    out[t] = results;
+  }
+  return out;
+}
+
+export async function statusText(env) {
+  const count = async (sql) => (await env.DB.prepare(sql).first()).n;
+  const posts = await count("SELECT COUNT(*) AS n FROM posts");
+  const unsent = await count("SELECT COUNT(*) AS n FROM posts WHERE sent_at_utc IS NULL");
+  const admins = await count("SELECT COUNT(*) AS n FROM admins");
+  const holidays = await count("SELECT COUNT(*) AS n FROM holidays");
+  const { results: runs } = await env.DB.prepare(
+    `SELECT source, channel, ran_at_utc, new_count, ok FROM scrape_runs
+     WHERE id IN (SELECT MAX(id) FROM scrape_runs GROUP BY source, channel)`
+  ).all();
+  const runLines = runs.length
+    ? runs.map((r) => `- ${r.source}/${r.channel}: ${r.ok ? "موفق" : "ناموفق"}، جدید: ${r.new_count}`)
+    : ["- هنوز اسکرپی ثبت نشده"];
+  return [
+    "وضعیت ربات",
+    `پست‌های ذخیره‌شده: ${posts} (ارسال‌نشده: ${unsent})`,
+    `ادمین‌ها: ${admins + 1} نفر (شامل مالک)`,
+    `تعطیلات ثبت‌شده: ${holidays}`,
+    "آخرین اسکرپ‌ها:",
+    ...runLines,
+  ].join("\n");
+}
+
+export async function logText(env) {
+  const { results } = await env.DB.prepare(
+    "SELECT at_utc, actor_id, action, detail FROM audit_log ORDER BY id DESC LIMIT 20"
+  ).all();
+  if (!results.length) return "هنوز تغییری ثبت نشده.";
+  return results
+    .map((r) => {
+      const d = new Date(r.at_utc * 1000).toISOString().replace("T", " ").slice(0, 16);
+      return `${d} | ${r.actor_id} | ${r.action}${r.detail ? " | " + r.detail : ""}`;
+    })
+    .join("\n");
+}

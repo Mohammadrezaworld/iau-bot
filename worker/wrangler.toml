@@ -7,3 +7,10 @@ account_id = "c222c6e6cea3c9a98481e1f06079fd5d"
 binding = "DB"
 database_name = "iaut-db"
 database_id = "REPLACE_ME"
+
+[vars]
+OWNER_ID = "269918114"
+
+[triggers]
+# ۲۰:۳۰ UTC = ۰۰:۰۰ تهران (ایران بدون DST از ۲۰۲۲)
+crons = ["30 20 * * *"]
