@@ -8,6 +8,7 @@ import { flushPosts } from "./channels.js";
 import { isAdmin } from "./admin.js";
 import { buildBackup } from "./admin.js";
 import { sendJsonDocument } from "./telegram.js";
+import { handleMetroCommand, handleMetroCallback, handleMetroUploadCallback, cleanupMetroMessages } from "./metro.js";
 
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
@@ -75,6 +76,7 @@ async function isOurGroup(env, chatId) {
 // گروه: فقط دستورهای عمومی، با ضداسپم ۳۰ ثانیه‌ای برای هر کاربر (ادمین‌ها مستثنی)
 async function handleGroupMessage(env, msg) {
   const { cmd } = parseCmd(msg.text);
+  if (cmd === "/metro" && msg.from) return handleMetroCommand(env, msg);
   if (!PUBLIC_CMDS.includes(cmd) || !msg.from) return;
   const userId = msg.from.id;
   // پیام دستوری کاربر بعد از پردازش پاک می‌شه (ربات فقط پیام‌های دستوری رو پاک می‌کنه)
@@ -104,8 +106,14 @@ async function handleTelegramWebhook(request, env) {
   try {
     if (update && update.callback_query) {
       const cq = update.callback_query;
-      if (cq.message && cq.message.chat && cq.message.chat.type === "private" && (await isAdmin(env, cq.from.id))) {
-        await handleCallback(env, cq);
+      const data = cq.data || "";
+      if (!cq.message || !cq.message.chat) return new Response("ok", { status: 200 });
+      if (data.startsWith("m:")) {
+        // منوی /metro در گروه؛ فقط همان گروه و فقط برای درخواست‌کننده (داخل handler چک می‌شه)
+        if (await isOurGroup(env, cq.message.chat.id)) await handleMetroCallback(env, cq);
+      } else if (cq.message.chat.type === "private" && (await isAdmin(env, cq.from.id))) {
+        if (data.startsWith("mu:")) await handleMetroUploadCallback(env, cq);
+        else await handleCallback(env, cq);
       }
       return new Response("ok", { status: 200 });
     }
@@ -145,7 +153,10 @@ export default {
     ctx.waitUntil(
       (async () => {
         try {
-          if (event.cron === "30 2 * * *") {
+          if (event.cron === "* * * * *") {
+            // هر دقیقه: پیام‌های موقت /metro که وقتشون رسیده پاک می‌شن
+            await cleanupMetroMessages(env);
+          } else if (event.cron === "30 2 * * *") {
             // ۰۶:۰۰ تهران: پست‌های دوره‌ی خواب یک‌جا
             await flushPosts(env);
           } else if (event.cron === "30 20 * * *") {

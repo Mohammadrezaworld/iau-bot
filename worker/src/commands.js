@@ -8,6 +8,7 @@ import { updatesText, flushPosts } from "./channels.js";
 import { tg } from "./telegram.js";
 import { faDate } from "./calendar.js";
 import { handleManage, publicContacts, publicResources, publicEvents, MANAGE_HELP } from "./manage.js";
+import { handleMetroDocument, metroInfoText } from "./metro.js";
 
 // دستورهایی که سطح content هم مجازه
 const CONTENT_CMDS = new Set([
@@ -42,6 +43,8 @@ const HELP = [
   "/backup — فایل پشتیبان",
   "/set_semester ۱۴۰۵-۰۶-۲۱ — شروع ترم (شنبه، شمسی)",
   "/set_group -100… — شناسه‌ی گروه",
+  "/metro_info — جدول‌های مترو فعال",
+  "جدول مترو: فایل xlsx را همین‌جا در پیوی بفرست (فقط ادمین کامل)؛ پیش‌نمایش و تأیید دارد.",
   "/help — همین راهنما",
   "/cancel — لغو کار نیمه‌تمام",
   "/admins — فهرست ادمین‌ها (فقط مالک)",
@@ -65,6 +68,10 @@ export async function handleAdminMessage(env, message) {
   if (!(await isAdmin(env, userId))) return;
 
   const role = await getRole(env, userId);
+  if (message.document) {
+    if (role === "content") return sendMessage(env, chatId, "این کار برای سطح دسترسی شما نیست.");
+    return handleMetroDocument(env, message);
+  }
   const { cmd, arg } = parseCmd(message.text);
 
   if (role === "content" && cmd.startsWith("/") && !CONTENT_CMDS.has(cmd)) {
@@ -98,6 +105,8 @@ export async function handleAdminMessage(env, message) {
       return sendMessage(env, chatId, HELP);
     case "/status":
       return sendMessage(env, chatId, await statusText(env));
+    case "/metro_info":
+      return sendMessage(env, chatId, await metroInfoText(env));
     case "/log":
       return sendMessage(env, chatId, await logText(env));
     case "/backup":

@@ -141,3 +141,18 @@ CREATE TABLE IF NOT EXISTS admin_roles (
   user_id INTEGER PRIMARY KEY,
   role    TEXT NOT NULL
 );
+
+-- ضداسپم /metro: هر استفاده‌ی غیرادمین (۳ بار در ۱۰ دقیقه)
+CREATE TABLE IF NOT EXISTS metro_usage (
+  user_id INTEGER NOT NULL,
+  at_utc  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS metro_usage_user ON metro_usage (user_id, at_utc);
+
+-- پیام‌های موقت /metro در گروه (منو و نتیجه) با زمان حذف
+CREATE TABLE IF NOT EXISTS metro_messages (
+  chat_id       INTEGER NOT NULL,
+  message_id    INTEGER NOT NULL,
+  delete_at_utc INTEGER NOT NULL,
+  PRIMARY KEY (chat_id, message_id)
+);
