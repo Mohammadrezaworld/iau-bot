@@ -88,6 +88,41 @@ function grid(buttons, tail = []) {
 const TABLE = { note: "jozve_files", exam: "exam_files" };
 const CB = { note: { c: "j:c:", f: "j:f:" }, exam: { c: "j:ec:", f: "j:ef:" } };
 const TITLE = { note: "جزوه‌ها", exam: "نمونه‌سوال" };
+const DEFAULT_CATEGORY = "سایر";
+const CATEGORY_ORDER = ["دروس عمومی", "معارف", "دروس اختصاصی", DEFAULT_CATEGORY];
+const MAX_CATEGORY_BYTES = 40;
+
+// دسته‌ی هر درس (از جدول course_categories)؛ درسی که دسته نداره زیر «سایر» میاد
+async function categoryMap(env) {
+  const { results } = await env.DB.prepare("SELECT course, category FROM course_categories").all();
+  return new Map(results.map((r) => [r.course, r.category]));
+}
+async function categoryOf(env, course) {
+  return (await categoryMap(env)).get(course) || DEFAULT_CATEGORY;
+}
+
+// دسته‌هایی که برای این نوع (جزوه/نمونه‌سوال) درس دارن، به ترتیب مشخص
+async function categoriesMarkup(env, kind) {
+  const { results } = await env.DB.prepare(`SELECT DISTINCT course FROM ${TABLE[kind]}`).all();
+  const map = await categoryMap(env);
+  const cats = new Set(results.map((r) => map.get(r.course) || DEFAULT_CATEGORY));
+  const ordered = [...CATEGORY_ORDER.filter((c) => cats.has(c)), ...[...cats].filter((c) => !CATEGORY_ORDER.includes(c))];
+  if (!ordered.length) return null;
+  const buttons = ordered.map((c) => ({ text: c, callback_data: `jk:${kind === "note" ? "n" : "e"}:${c}` }));
+  return grid(buttons, [{ text: "بستن", callback_data: "j:x" }]);
+}
+
+// درس‌های یک دسته
+async function courseMarkupForCategory(env, kind, cat) {
+  const { results } = await env.DB.prepare(`SELECT DISTINCT course FROM ${TABLE[kind]} ORDER BY course`).all();
+  const map = await categoryMap(env);
+  const buttons = results
+    .map((r) => r.course)
+    .filter((c) => (map.get(c) || DEFAULT_CATEGORY) === cat && bytes(c) <= MAX_NAME_BYTES)
+    .map((c) => ({ text: c, callback_data: `${CB[kind].c}${c}` }));
+  if (!buttons.length) return null;
+  return grid(buttons, [{ text: "بازگشت", callback_data: kind === "note" ? "j:n" : "j:e" }, { text: "بستن", callback_data: "j:x" }]);
+}
 
 async function courseMarkup(env, kind) {
   const { results } = await env.DB.prepare(`SELECT DISTINCT course FROM ${TABLE[kind]} ORDER BY course LIMIT 60`).all();
@@ -140,9 +175,19 @@ export async function handleJozveCallback(env, cq) {
 
   if (data === "j:n" || data === "j:e") {
     const kind = data === "j:n" ? "note" : "exam";
-    const markup = await courseMarkup(env, kind);
+    const markup = await categoriesMarkup(env, kind);
     if (!markup) return ack(env, cq, "هنوز چیزی ثبت نشده");
-    await editTemp(env, chatId, msgId, `${TITLE[kind]} — درس رو انتخاب کن:`, markup);
+    await editTemp(env, chatId, msgId, `${TITLE[kind]} — دسته رو انتخاب کن:`, markup);
+    return ack(env, cq);
+  }
+
+  // دسته انتخاب شد → درس‌های همون دسته
+  if (data.startsWith("jk:")) {
+    const kind = data[3] === "n" ? "note" : "exam";
+    const cat = data.slice(5);
+    const markup = await courseMarkupForCategory(env, kind, cat);
+    if (!markup) return ack(env, cq, "درسی توی این دسته نیست");
+    await editTemp(env, chatId, msgId, `${TITLE[kind]} — ${cat}\nدرس رو انتخاب کن:`, markup);
     return ack(env, cq);
   }
 
@@ -158,8 +203,9 @@ export async function handleJozveCallback(env, cq) {
       .filter((p) => bytes(p) <= MAX_NAME_BYTES)
       .map((p) => ({ text: p, callback_data: `${CB[kind].f}${course}|${p}` }));
     if (!buttons.length) return ack(env, cq, "استادی برای این درس نیست");
+    const cat = await categoryOf(env, course);
     await editTemp(env, chatId, msgId, `${TITLE[kind]} — ${course}\nاستاد رو انتخاب کن:`, grid(buttons, [
-      { text: "بازگشت", callback_data: kind === "note" ? "j:n" : "j:e" },
+      { text: "بازگشت", callback_data: `jk:${kind === "note" ? "n" : "e"}:${cat}` },
       { text: "بستن", callback_data: "j:x" },
     ]));
     return ack(env, cq);
@@ -190,6 +236,26 @@ export async function handleJozveCallback(env, cq) {
   }
 
   return ack(env, cq);
+}
+
+// /jozve_category در DM: بدون آرگومان فهرست؛ «درس | دسته» برای تعیین دسته‌ی درس
+export async function jozveCategoryCommand(env, chatId, userId, arg) {
+  const text = String(arg || "").trim();
+  if (!text) {
+    const { results } = await env.DB.prepare("SELECT course, category FROM course_categories ORDER BY category, course").all();
+    const lines = results.map((r) => `• ${r.course} — ${r.category}`);
+    lines.push("", `درس‌های بدون دسته زیر «${DEFAULT_CATEGORY}» میان. تعیین دسته: /jozve_category درس | دسته`);
+    return sendMessage(env, chatId, lines.join("\n"));
+  }
+  const [course, category] = text.split("|").map((p) => p.trim());
+  if (!course || !category) return sendMessage(env, chatId, "فرمت: /jozve_category درس | دسته");
+  if (bytes(course) > MAX_NAME_BYTES) return sendMessage(env, chatId, `نام درس حداکثر ${MAX_NAME_BYTES} بایت.`);
+  if (bytes(category) > MAX_CATEGORY_BYTES) return sendMessage(env, chatId, `نام دسته حداکثر ${MAX_CATEGORY_BYTES} بایت.`);
+  await env.DB.prepare(
+    "INSERT INTO course_categories (course, category) VALUES (?, ?) ON CONFLICT(course) DO UPDATE SET category = excluded.category"
+  ).bind(course, category).run();
+  await audit(env, userId, "jozve_category", `${course} => ${category}`);
+  return sendMessage(env, chatId, `«${course}» توی دسته‌ی «${category}» قرار گرفت.`);
 }
 
 // /jozve_list در DM
