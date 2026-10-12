@@ -1,5 +1,8 @@
-// Worker پایه: سلامت سرویس و دریافت پست‌های اسکرپ‌شده از GitHub Actions.
-// دستورات تلگرام و منوها در مراحل بعدی اضافه میشن.
+// Worker: webhook تلگرام، دریافت پست‌های اسکرپ‌شده (/ingest)، پشتیبان روزانه.
+import { webhookSecret } from "./telegram.js";
+import { handleAdminMessage } from "./commands.js";
+import { buildBackup } from "./admin.js";
+import { sendJsonDocument } from "./telegram.js";
 
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
@@ -47,6 +50,26 @@ async function handleIngest(request, env) {
   return json({ ok: true, received: posts.length, new: newCount });
 }
 
+async function handleTelegramWebhook(request, env) {
+  // Telegram رمز secret_token رو توی هدر می‌فرسته؛ اگه نبود، درخواست جعلیه
+  const expected = await webhookSecret(env);
+  if (request.headers.get("x-telegram-bot-api-secret-token") !== expected) {
+    return new Response("forbidden", { status: 403 });
+  }
+
+  const update = await request.json().catch(() => null);
+  try {
+    // فعلاً فقط DM. پیام‌های گروه در مرحله‌ی بعد اضافه می‌شن.
+    if (update && update.message && update.message.chat && update.message.chat.type === "private") {
+      await handleAdminMessage(env, update.message);
+    }
+  } catch (err) {
+    // خطا رو لاگ می‌کنیم ولی 200 برمی‌گردونیم تا تلگرام بی‌خودی تکرار نکنه
+    console.error("webhook_error", err && err.message ? err.message : "unknown");
+  }
+  return new Response("ok", { status: 200 });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -54,11 +77,26 @@ export default {
     if (request.method === "GET" && url.pathname === "/health") {
       return json({ ok: true, time_utc: nowUtc() });
     }
-
     if (request.method === "POST" && url.pathname === "/ingest") {
       return handleIngest(request, env);
     }
-
+    if (request.method === "POST" && url.pathname === "/tg-webhook") {
+      return handleTelegramWebhook(request, env);
+    }
     return json({ ok: false, error: "not_found" }, 404);
+  },
+
+  // پشتیبان روزانه برای مالک (cron در wrangler.toml)
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(
+      (async () => {
+        try {
+          const backup = await buildBackup(env);
+          await sendJsonDocument(env, env.OWNER_ID, "iaut-backup.json", backup, "پشتیبان روزانه");
+        } catch (err) {
+          console.error("backup_error", err && err.message ? err.message : "unknown");
+        }
+      })()
+    );
   },
 };

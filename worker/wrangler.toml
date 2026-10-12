@@ -7,3 +7,10 @@ account_id = "REDACTED_ACCOUNT_ID"
 binding = "DB"
 database_name = "iaut-db"
 database_id = "REPLACE_ME"
+
+[vars]
+OWNER_ID = "REDACTED_OWNER_ID"
+
+[triggers]
+# ۲۰:۳۰ UTC = ۰۰:۰۰ تهران (ایران بدون DST از ۲۰۲۲)
+crons = ["30 20 * * *"]
