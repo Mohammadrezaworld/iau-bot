@@ -39,19 +39,7 @@ CREATE TABLE IF NOT EXISTS scrape_runs (
   ok          INTEGER NOT NULL DEFAULT 1
 );
 
--- لینک‌های مفید (/links)
-CREATE TABLE IF NOT EXISTS links (
-  id    INTEGER PRIMARY KEY AUTOINCREMENT,
-  title TEXT NOT NULL,
-  url   TEXT NOT NULL
-);
 
--- شماره تلفن‌ها (/call)
-CREATE TABLE IF NOT EXISTS phones (
-  id    INTEGER PRIMARY KEY AUTOINCREMENT,
-  title TEXT NOT NULL,
-  number TEXT NOT NULL
-);
 
 -- جدول مترو (ساعت‌ها به دقیقه از نیمه‌شب)
 CREATE TABLE IF NOT EXISTS metro_versions (
@@ -87,3 +75,49 @@ CREATE TABLE IF NOT EXISTS user_cooldowns (
 
 -- مقادیر پیش‌فرض
 INSERT OR IGNORE INTO settings (key, value) VALUES ('semester_start', '2026-09-12');
+
+-- شماره‌های اداری (/call) با دسته
+CREATE TABLE IF NOT EXISTS contacts (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  category TEXT NOT NULL,
+  name     TEXT NOT NULL,
+  number   TEXT NOT NULL,
+  note     TEXT NOT NULL DEFAULT '',
+  sort_order INTEGER NOT NULL DEFAULT 0
+);
+
+-- لینک‌های مفید (/links) با دسته
+CREATE TABLE IF NOT EXISTS resources (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  category TEXT NOT NULL,
+  title    TEXT NOT NULL,
+  url      TEXT NOT NULL,
+  note     TEXT NOT NULL DEFAULT '',
+  sort_order INTEGER NOT NULL DEFAULT 0
+);
+
+-- رویدادهای مهم ترم (میان‌ترم، انتخاب واحد، ...)
+CREATE TABLE IF NOT EXISTS events (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  start_date TEXT NOT NULL,              -- YYYY-MM-DD میلادی
+  end_date   TEXT NOT NULL,
+  title      TEXT NOT NULL,
+  kind       TEXT NOT NULL DEFAULT '',
+  archived   INTEGER NOT NULL DEFAULT 0
+);
+
+-- جلوگیری از یادآوری تکراری: هر رویداد فقط یک بار 'pre' و یک بار 'day'
+CREATE TABLE IF NOT EXISTS reminder_log (
+  event_id INTEGER NOT NULL,
+  kind     TEXT NOT NULL,
+  PRIMARY KEY (event_id, kind)
+);
+
+-- عملیات حذفی منتظر تأیید (۶۰ ثانیه)
+CREATE TABLE IF NOT EXISTS pending_actions (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor_id    INTEGER NOT NULL,
+  action      TEXT NOT NULL,
+  payload     TEXT NOT NULL,
+  expires_utc INTEGER NOT NULL
+);

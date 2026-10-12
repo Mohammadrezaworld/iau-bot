@@ -1,7 +1,8 @@
 // Worker: webhook تلگرام، دریافت پست‌های اسکرپ‌شده (/ingest)، پشتیبان روزانه.
 import { webhookSecret } from "./telegram.js";
-import { handleAdminMessage, parseCmd, PUBLIC_CMDS } from "./commands.js";
-import { answerPublic, getSetting } from "./public.js";
+import { handleAdminMessage, parseCmd, PUBLIC_CMDS, runPublic } from "./commands.js";
+import { getSetting } from "./public.js";
+import { sendReminders } from "./reminders.js";
 import { isAdmin } from "./admin.js";
 import { buildBackup } from "./admin.js";
 import { sendJsonDocument } from "./telegram.js";
@@ -70,7 +71,7 @@ async function handleGroupMessage(env, msg) {
       "INSERT INTO user_cooldowns (user_id, last_utc) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_utc = excluded.last_utc"
     ).bind(userId, nowS).run();
   }
-  await answerPublic(env, msg.chat.id, cmd);
+  await runPublic(env, msg.chat.id, cmd);
 }
 
 async function handleTelegramWebhook(request, env) {
@@ -113,15 +114,19 @@ export default {
     return json({ ok: false, error: "not_found" }, 404);
   },
 
-  // پشتیبان روزانه برای مالک (cron در wrangler.toml)
+  // cron: پشتیبان روزانه برای مالک و یادآوری رویدادها (زمان‌ها در wrangler.toml)
   async scheduled(event, env, ctx) {
     ctx.waitUntil(
       (async () => {
         try {
-          const backup = await buildBackup(env);
-          await sendJsonDocument(env, env.OWNER_ID, "iaut-backup.json", backup, "پشتیبان روزانه");
+          if (event.cron === "30 20 * * *") {
+            const backup = await buildBackup(env);
+            await sendJsonDocument(env, env.OWNER_ID, "iaut-backup.json", backup, "پشتیبان روزانه");
+          } else {
+            await sendReminders(env, event.cron);
+          }
         } catch (err) {
-          console.error("backup_error", err && err.message ? err.message : "unknown");
+          console.error("cron_error", err && err.message ? err.message : "unknown");
         }
       })()
     );

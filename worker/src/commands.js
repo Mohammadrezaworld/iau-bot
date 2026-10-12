@@ -2,8 +2,16 @@
 import { sendMessage, sendJsonDocument } from "./telegram.js";
 import { isAdmin, audit, buildBackup, statusText, logText } from "./admin.js";
 import { answerPublic, getSetting } from "./public.js";
+import { handleManage, publicContacts, publicResources, publicEvents, MANAGE_HELP } from "./manage.js";
 
-export const PUBLIC_CMDS = ["/week", "/next", "/term", "/left"];
+export const PUBLIC_CMDS = ["/week", "/next", "/term", "/left", "/call", "/links", "/events"];
+
+export async function runPublic(env, chatId, cmd) {
+  if (["/call"].includes(cmd)) return sendMessage(env, chatId, await publicContacts(env));
+  if (["/links"].includes(cmd)) return sendMessage(env, chatId, await publicResources(env));
+  if (["/events"].includes(cmd)) return sendMessage(env, chatId, await publicEvents(env));
+  return answerPublic(env, chatId, cmd);
+}
 
 export function parseCmd(text) {
   const t = (text || "").trim();
@@ -21,7 +29,9 @@ const HELP = [
   "/set_group -100… — شناسه‌ی گروه",
   "/help — همین راهنما",
   "",
-  "دستورهای هفته (/week /next /term /left) هم در DM برای تست کار می‌کنن.",
+  MANAGE_HELP,
+  "",
+  "دستورهای عمومی (/week /next /term /left /call /links /events) هم در DM برای تست کار می‌کنن.",
 ].join("\n");
 
 export async function handleAdminMessage(env, message) {
@@ -34,7 +44,10 @@ export async function handleAdminMessage(env, message) {
 
   const { cmd, arg } = parseCmd(message.text);
 
-  if (PUBLIC_CMDS.includes(cmd)) return answerPublic(env, chatId, cmd);
+  if (PUBLIC_CMDS.includes(cmd)) return runPublic(env, chatId, cmd);
+
+  const managed = await handleManage(env, userId, cmd, arg);
+  if (managed !== null) return sendMessage(env, chatId, managed);
 
   switch (cmd) {
     case "/start":
