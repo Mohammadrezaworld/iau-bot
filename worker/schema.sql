@@ -69,3 +69,21 @@ CREATE TABLE IF NOT EXISTS audit_log (
   action     TEXT NOT NULL,
   detail     TEXT NOT NULL DEFAULT ''
 );
+
+-- کش پاسخ‌های روزانه (هفته/ترم/باقی‌مانده) برای ریپلای به جواب قبلی
+CREATE TABLE IF NOT EXISTS week_cache (
+  key         TEXT NOT NULL,            -- مثل "/week|2026-10-12"
+  chat_id     INTEGER NOT NULL,
+  message_id  INTEGER NOT NULL,
+  created_utc INTEGER NOT NULL,
+  PRIMARY KEY (key, chat_id)
+);
+
+-- ضداسپم: آخرین زمان دستور هر کاربر در گروه
+CREATE TABLE IF NOT EXISTS user_cooldowns (
+  user_id  INTEGER PRIMARY KEY,
+  last_utc INTEGER NOT NULL
+);
+
+-- مقادیر پیش‌فرض
+INSERT OR IGNORE INTO settings (key, value) VALUES ('semester_start', '2026-09-12');

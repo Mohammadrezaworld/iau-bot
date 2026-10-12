@@ -1,13 +1,27 @@
 // دستورهای ادمین در DM. کاربرهای عادی در DM هیچ پاسخی نمی‌گیرن.
 import { sendMessage, sendJsonDocument } from "./telegram.js";
 import { isAdmin, audit, buildBackup, statusText, logText } from "./admin.js";
+import { answerPublic, getSetting } from "./public.js";
+
+export const PUBLIC_CMDS = ["/week", "/next", "/term", "/left"];
+
+export function parseCmd(text) {
+  const t = (text || "").trim();
+  const cmd = t.split(/\s+/)[0].toLowerCase().split("@")[0];
+  const arg = t.slice(t.split(/\s+/)[0].length).trim();
+  return { cmd, arg };
+}
 
 const HELP = [
   "دستورهای ادمین:",
   "/status — وضعیت ربات",
   "/log — ۲۰ تغییر آخر",
   "/backup — فایل پشتیبان",
+  "/set_semester YYYY-MM-DD — شروع ترم (شنبه)",
+  "/set_group -100… — شناسه‌ی گروه",
   "/help — همین راهنما",
+  "",
+  "دستورهای هفته (/week /next /term /left) هم در DM برای تست کار می‌کنن.",
 ].join("\n");
 
 export async function handleAdminMessage(env, message) {
@@ -18,8 +32,9 @@ export async function handleAdminMessage(env, message) {
   // کاربر عادی: بی‌صدا نادیده گرفته می‌شه
   if (!(await isAdmin(env, userId))) return;
 
-  const text = (message.text || "").trim();
-  const cmd = text.split(/\s+/)[0].toLowerCase().split("@")[0];
+  const { cmd, arg } = parseCmd(message.text);
+
+  if (PUBLIC_CMDS.includes(cmd)) return answerPublic(env, chatId, cmd);
 
   switch (cmd) {
     case "/start":
@@ -32,9 +47,27 @@ export async function handleAdminMessage(env, message) {
     case "/backup":
       await audit(env, userId, "backup", "manual");
       return sendJsonDocument(env, chatId, "iaut-backup.json", await buildBackup(env), "پشتیبان دستی");
+    case "/set_semester": {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(arg)) return sendMessage(env, chatId, "فرمت درست: /set_semester 2026-09-12");
+      const old = await getSetting(env, "semester_start", "");
+      await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('semester_start', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .bind(arg).run();
+      await audit(env, userId, "set_semester", `${old} -> ${arg}`);
+      return sendMessage(env, chatId, `شروع ترم ثبت شد: ${arg}`);
+    }
+    case "/set_group": {
+      if (!/^-?\d{5,20}$/.test(arg)) return sendMessage(env, chatId, "فرمت درست: /set_group -1001234567890");
+      await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('group_id', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .bind(arg).run();
+      await audit(env, userId, "set_group", arg);
+      return sendMessage(env, chatId, "شناسه‌ی گروه ثبت شد.");
+    }
     default:
-      if (text.startsWith("/")) return sendMessage(env, chatId, "دستور ناشناخته. /help رو بزن.");
+      if (text_is_command(message.text)) return sendMessage(env, chatId, "دستور ناشناخته. /help رو بزن.");
       return; // پیام‌های عادی ادمین هم بی‌پاسخ
   }
 }
 
+function text_is_command(text) {
+  return (text || "").trim().startsWith("/");
+}
