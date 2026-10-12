@@ -166,3 +166,23 @@ CREATE TABLE IF NOT EXISTS undo_stack (
   key         TEXT NOT NULL,
   before      TEXT
 );
+
+-- جزوه‌ها: شماره‌ی پیام کانال خصوصی همراه با درس و استاد. خود فایل داخل تلگرام می‌مونه.
+CREATE TABLE IF NOT EXISTS jozve_files (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  course          TEXT NOT NULL,
+  professor       TEXT NOT NULL,
+  title           TEXT NOT NULL DEFAULT '',
+  file_name       TEXT NOT NULL DEFAULT '',
+  file_size       INTEGER NOT NULL DEFAULT 0,
+  channel_msg_id  INTEGER NOT NULL UNIQUE,
+  created_utc     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS jozve_files_course ON jozve_files (course, professor);
+
+-- ضداسپم /jozve: هر استفاده‌ی غیرادمین (۳ بار در ۱۰ دقیقه)
+CREATE TABLE IF NOT EXISTS jozve_usage (
+  user_id INTEGER NOT NULL,
+  at_utc  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS jozve_usage_user ON jozve_usage (user_id, at_utc);
