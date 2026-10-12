@@ -187,7 +187,7 @@ export async function removeList(env, chatId, type) {
   if (!results.length) return sendMessage(env, chatId, "چیزی برای حذف نیست.");
   const rows = results.map((r) => {
     const label = type === "event" ? `${faDate(r.start_date)} — ${r.title}` : type === "call" ? `${r.name}` : r.title;
-    return [{ text: `🗑 ${label}`.slice(0, 60), callback_data: `rm:${type}:${r.id}` }];
+    return [{ text: `❌ ${label}`.slice(0, 60), callback_data: `rm:${type}:${r.id}` }];
   });
   return tg(env, "sendMessage", { chat_id: chatId, text: "کدوم حذف بشه؟", reply_markup: { inline_keyboard: rows } });
 }
