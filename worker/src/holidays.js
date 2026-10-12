@@ -1,5 +1,5 @@
 // مدیریت تعطیلات رسمی در DM (فقط ادمین کامل). تعطیلات روی انتخاب جدول جمعه‌ی مترو اثر دارن.
-import { tg, sendMessage } from "./telegram.js";
+import { tg, sendMessage, tryDeleteMessage } from "./telegram.js";
 import { audit, getRole } from "./admin.js";
 import { parseDateInput, normalizeDigits } from "./jalali.js";
 import { faDate } from "./calendar.js";
@@ -44,6 +44,7 @@ export async function holidayCommand(env, chatId, userId, cmd, arg) {
     const { results } = await env.DB.prepare("SELECT date, title FROM holidays ORDER BY date DESC LIMIT 30").all();
     if (!results.length) return sendMessage(env, chatId, "تعطیلی برای حذف نیست.");
     const rows = results.map((r) => [{ text: `❌ ${faDate(r.date)}`.slice(0, 60), callback_data: `hol:c:${r.date}` }]);
+    rows.push([{ text: "بستن", callback_data: "hol:n" }]);
     return tg(env, "sendMessage", { chat_id: chatId, text: "کدوم تعطیلی حذف بشه؟", reply_markup: { inline_keyboard: rows } });
   }
   const iso = parseDateInput(text.split(/\s+/)[0]);
@@ -59,7 +60,10 @@ export async function handleHolidayCallback(env, cq) {
   const answer = (text = "") => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text });
 
   if (!(await isFullAdmin(env, cq.from.id))) return answer("این کار برای سطح دسترسی شما نیست.");
-  if (data === "hol:n") return answer("لغو شد");
+  if (data === "hol:n") {
+    await tryDeleteMessage(env, chatId, cq.message.message_id);
+    return answer();
+  }
 
   if (data.startsWith("hol:c:")) {
     const iso = data.slice(6);

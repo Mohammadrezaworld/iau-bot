@@ -10,7 +10,7 @@ import { handleJozvePost, handleJozveCommand, handleJozveCallback, handleJozveRe
 import { flushPosts } from "./channels.js";
 import { isAdmin } from "./admin.js";
 import { buildBackup } from "./admin.js";
-import { sendJsonDocument } from "./telegram.js";
+import { sendJsonDocument, tg } from "./telegram.js";
 import { handleMetroCommand, handleMetroCallback, handleMetroUploadCallback, cleanupMetroMessages } from "./metro.js";
 
 const json = (obj, status = 200) =>
@@ -117,6 +117,10 @@ async function handleTelegramWebhook(request, env) {
       } else if (data.startsWith("m:")) {
         // منوی /metro در گروه؛ فقط همان گروه و فقط برای درخواست‌کننده (داخل handler چک می‌شه)
         if (await isOurGroup(env, cq.message.chat.id)) await handleMetroCallback(env, cq);
+      } else if (data === "x:c" && cq.message.chat.type === "private" && (await isAdmin(env, cq.from.id))) {
+        // بستن لیست‌های حذف و ویرایش در DM
+        await tryDeleteMessage(env, cq.message.chat.id, cq.message.message_id);
+        await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
       } else if (cq.message.chat.type === "private" && (await isAdmin(env, cq.from.id))) {
         if (data.startsWith("mu:")) await handleMetroUploadCallback(env, cq);
         else if (data.startsWith("kw:")) await handleKeywordCallback(env, cq);
