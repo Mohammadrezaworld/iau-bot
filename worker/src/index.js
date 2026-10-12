@@ -6,6 +6,7 @@ import { sendReminders } from "./reminders.js";
 import { handleCallback } from "./wizard.js";
 import { handleKeywordCallback } from "./keywords.js";
 import { handleHolidayCallback } from "./holidays.js";
+import { handleJozvePost, handleJozveCommand, handleJozveCallback, handleJozveRemoveCallback } from "./jozve.js";
 import { flushPosts } from "./channels.js";
 import { isAdmin } from "./admin.js";
 import { buildBackup } from "./admin.js";
@@ -79,6 +80,7 @@ async function isOurGroup(env, chatId) {
 async function handleGroupMessage(env, msg) {
   const { cmd } = parseCmd(msg.text);
   if (cmd === "/metro" && msg.from) return handleMetroCommand(env, msg);
+  if (cmd === "/jozve" && msg.from) return handleJozveCommand(env, msg);
   if (!PUBLIC_CMDS.includes(cmd) || !msg.from) return;
   const userId = msg.from.id;
   // پیام دستوری کاربر بعد از پردازش پاک می‌شه (ربات فقط پیام‌های دستوری رو پاک می‌کنه)
@@ -110,15 +112,23 @@ async function handleTelegramWebhook(request, env) {
       const cq = update.callback_query;
       const data = cq.data || "";
       if (!cq.message || !cq.message.chat) return new Response("ok", { status: 200 });
-      if (data.startsWith("m:")) {
+      if (data.startsWith("j:")) {
+        if (await isOurGroup(env, cq.message.chat.id)) await handleJozveCallback(env, cq);
+      } else if (data.startsWith("m:")) {
         // منوی /metro در گروه؛ فقط همان گروه و فقط برای درخواست‌کننده (داخل handler چک می‌شه)
         if (await isOurGroup(env, cq.message.chat.id)) await handleMetroCallback(env, cq);
       } else if (cq.message.chat.type === "private" && (await isAdmin(env, cq.from.id))) {
         if (data.startsWith("mu:")) await handleMetroUploadCallback(env, cq);
         else if (data.startsWith("kw:")) await handleKeywordCallback(env, cq);
         else if (data.startsWith("hol:")) await handleHolidayCallback(env, cq);
+        else if (data.startsWith("jrm:")) await handleJozveRemoveCallback(env, cq);
         else await handleCallback(env, cq);
       }
+      return new Response("ok", { status: 200 });
+    }
+    // پست‌های کانال خصوصی جزوه (آپلود ادمین‌ها)
+    if (update && update.channel_post) {
+      await handleJozvePost(env, update.channel_post);
       return new Response("ok", { status: 200 });
     }
     const msg = update && update.message;

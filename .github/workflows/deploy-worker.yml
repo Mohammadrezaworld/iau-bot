@@ -63,5 +63,5 @@ jobs:
           curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
             -d "url=https://iaut-bot.rimon24288.workers.dev/tg-webhook" \
             -d "secret_token=$SECRET" \
-            -d "allowed_updates=[\"message\",\"callback_query\"]" \
+            -d "allowed_updates=[\"message\",\"callback_query\",\"channel_post\"]" \
             -d "drop_pending_updates=true" | sed 's/"ok":true.*/webhook ok/' ; echo
