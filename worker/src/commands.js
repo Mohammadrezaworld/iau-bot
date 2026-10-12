@@ -3,6 +3,7 @@ import { sendMessage, sendJsonDocument } from "./telegram.js";
 import { isAdmin, audit, buildBackup, statusText, logText } from "./admin.js";
 import { answerPublic, getSetting } from "./public.js";
 import { parseDateInput, normalizeDigits } from "./jalali.js";
+import { startWizard, handleWizardText, removeList } from "./wizard.js";
 import { faDate } from "./calendar.js";
 import { handleManage, publicContacts, publicResources, publicEvents, MANAGE_HELP } from "./manage.js";
 
@@ -30,6 +31,10 @@ const HELP = [
   "/set_semester ۱۴۰۵-۰۶-۲۱ — شروع ترم (شنبه، شمسی)",
   "/set_group -100… — شناسه‌ی گروه",
   "/help — همین راهنما",
+  "/cancel — لغو کار نیمه‌تمام",
+  "",
+  "افزودن رویداد/شماره/لینک: فقط دستور رو بزن (مثلاً /event_add) و مرحله‌به‌مرحله جواب بده.",
+  "حذف: /event_remove یا /call_remove یا /link_remove رو بزن و از دکمه‌ها انتخاب کن.",
   "",
   MANAGE_HELP,
   "",
@@ -46,7 +51,23 @@ export async function handleAdminMessage(env, message) {
 
   const { cmd, arg } = parseCmd(message.text);
 
+  // اگه جریان مرحله‌به‌مرحله فعاله، متن ادمین جواب اون مرحله‌ست
+  if (!cmd.startsWith("/") || cmd === "/cancel") {
+    if (cmd === "/cancel") {
+      await env.DB.prepare("DELETE FROM admin_sessions WHERE user_id = ?").bind(userId).run();
+      return sendMessage(env, chatId, "لغو شد.");
+    }
+    if (await handleWizardText(env, message)) return;
+    return;
+  }
+
   if (PUBLIC_CMDS.includes(cmd)) return runPublic(env, chatId, cmd);
+
+  // افزودن بدون آرگومان: مرحله‌به‌مرحله. حذف بدون آرگومان: لیست با دکمه
+  const wizardFlows = { "/event_add": "event", "/call_add": "call", "/link_add": "link" };
+  if (wizardFlows[cmd] && !arg) return startWizard(env, userId, chatId, wizardFlows[cmd]);
+  const removeTypes = { "/event_remove": "event", "/call_remove": "call", "/link_remove": "link" };
+  if (removeTypes[cmd] && !arg) return removeList(env, chatId, removeTypes[cmd]);
 
   const managed = await handleManage(env, userId, cmd, arg);
   if (managed !== null) return sendMessage(env, chatId, managed);
@@ -80,11 +101,7 @@ export async function handleAdminMessage(env, message) {
       return sendMessage(env, chatId, "شناسه‌ی گروه ثبت شد.");
     }
     default:
-      if (text_is_command(message.text)) return sendMessage(env, chatId, "دستور ناشناخته. /help رو بزن.");
-      return; // پیام‌های عادی ادمین هم بی‌پاسخ
+      return sendMessage(env, chatId, "دستور ناشناخته. /help رو بزن.");
   }
 }
 
-function text_is_command(text) {
-  return (text || "").trim().startsWith("/");
-}

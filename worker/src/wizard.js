@@ -1,0 +1,193 @@
+// افزودن مرحله‌به‌مرحله‌ی رویداد، شماره و لینک در DM، و حذف با دکمه (فقط ادمین).
+import { tg, sendMessage } from "./telegram.js";
+import { audit } from "./admin.js";
+import { parseDateInput, normalizeDigits } from "./jalali.js";
+import { faDate } from "./calendar.js";
+
+const nowUtc = () => Math.floor(Date.now() / 1000);
+
+const KINDS = { exam: "امتحان", midterm: "میان‌ترم", selection: "انتخاب واحد", adddrop: "حذف و اضافه", other: "سایر" };
+
+const FLOWS = {
+  event: [
+    { key: "start", prompt: "تاریخ شروع رو شمسی بنویس (مثلاً ۱۴۰۵-۰۷-۲۸).", parse: (t) => parseDateInput(t) || null, err: "تاریخ درست نیست. مثلاً ۱۴۰۵-۰۷-۲۸" },
+    { key: "end", prompt: "تاریخ پایان رو بنویس، یا «یک روزه» رو بزن.", optional: true, parse: (t) => parseDateInput(t) || null, err: "تاریخ درست نیست. یا بنویس یا دکمه‌ی «یک روزه» رو بزن." },
+    { key: "title", prompt: "عنوان رویداد؟ (مثلاً میان‌ترم ریاضی)", parse: (t) => (t.length >= 2 ? t : null), err: "عنوان خیلی کوتاهه." },
+    { key: "kind", prompt: "نوع رویداد رو انتخاب کن:", buttons: "kind", parse: null },
+  ],
+  call: [
+    { key: "category", prompt: "دسته‌ی شماره؟ (مثلاً آموزش، امور دانشجویی)", parse: (t) => (t.length >= 2 ? t : null), err: "دسته خیلی کوتاهه." },
+    { key: "name", prompt: "نام واحد یا شخص؟ (مثلاً آموزش کامپیوتر)", parse: (t) => (t.length >= 2 ? t : null), err: "نام خیلی کوتاهه." },
+    { key: "number", prompt: "شماره؟ (مثلاً ۰۴۱۳۱۹۶۶۱۳۱)", parse: (t) => (/^[0-9+\-]{6,20}$/.test(normalizeDigits(t).replace(/\s/g, "")) ? normalizeDigits(t).replace(/\s/g, "") : null), err: "شماره درست نیست. فقط رقم بنویس." },
+    { key: "note", prompt: "یادداشت؟ (اختیاری) یا «بدون یادداشت» رو بزن.", optional: true, parse: (t) => t, err: "" },
+  ],
+  link: [
+    { key: "category", prompt: "دسته‌ی لینک؟ (مثلاً آموزشیار، کانال‌ها)", parse: (t) => (t.length >= 2 ? t : null), err: "دسته خیلی کوتاهه." },
+    { key: "title", prompt: "عنوان لینک؟", parse: (t) => (t.length >= 2 ? t : null), err: "عنوان خیلی کوتاهه." },
+    { key: "url", prompt: "لینک رو بفرست (باید با https شروع بشه).", parse: (t) => (/^https:\/\/\S+$/.test(t) ? t : null), err: "فقط لینک https قبول می‌شه." },
+    { key: "note", prompt: "یادداشت؟ (اختیاری) یا «بدون یادداشت» رو بزن.", optional: true, parse: (t) => t, err: "" },
+  ],
+};
+
+const kindButtons = () => ({
+  inline_keyboard: [
+    Object.entries(KINDS).slice(0, 2).map(([k, v]) => ({ text: v, callback_data: `w:kind:${k}` })),
+    Object.entries(KINDS).slice(2, 4).map(([k, v]) => ({ text: v, callback_data: `w:kind:${k}` })),
+    [{ text: KINDS.other, callback_data: "w:kind:other" }],
+  ],
+});
+
+const skipButton = { inline_keyboard: [[{ text: "یک روزه / بدون یادداشت", callback_data: "w:skip" }]] };
+const confirmButtons = { inline_keyboard: [[{ text: "ثبت", callback_data: "w:ok" }, { text: "لغو", callback_data: "w:cancel" }]] };
+
+async function getSession(env, userId) {
+  return env.DB.prepare("SELECT * FROM admin_sessions WHERE user_id = ?").bind(userId).first();
+}
+async function saveSession(env, userId, flow, step, data) {
+  await env.DB.prepare(
+    `INSERT INTO admin_sessions (user_id, flow, step, data, updated_utc) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(user_id) DO UPDATE SET flow = excluded.flow, step = excluded.step, data = excluded.data, updated_utc = excluded.updated_utc`
+  ).bind(userId, flow, step, JSON.stringify(data), nowUtc()).run();
+}
+async function clearSession(env, userId) {
+  await env.DB.prepare("DELETE FROM admin_sessions WHERE user_id = ?").bind(userId).run();
+}
+
+function summary(flow, data) {
+  if (flow === "event") {
+    const range = data.end && data.end !== data.start ? `${faDate(data.start)} تا ${faDate(data.end)}` : faDate(data.start);
+    return `رویداد: ${data.title}\nتاریخ: ${range}\nنوع: ${data.kind}`;
+  }
+  if (flow === "call") return `دسته: ${data.category}\nنام: ${data.name}\nشماره: ${data.number}${data.note ? "\nیادداشت: " + data.note : ""}`;
+  return `دسته: ${data.category}\nعنوان: ${data.title}\nلینک: ${data.url}${data.note ? "\nیادداشت: " + data.note : ""}`;
+}
+
+async function askStep(env, chatId, flow, step) {
+  const s = FLOWS[flow][step];
+  const opts = {};
+  if (s.buttons === "kind") opts.reply_markup = kindButtons();
+  else if (s.optional) opts.reply_markup = skipButton;
+  return tg(env, "sendMessage", { chat_id: chatId, text: s.prompt, ...opts });
+}
+
+export async function startWizard(env, userId, chatId, flow) {
+  await saveSession(env, userId, flow, 0, {});
+  return askStep(env, chatId, flow, 0);
+}
+
+// ذخیره‌ی مقدار یک مرحله و رفتن به مرحله‌ی بعد (یا تأیید)
+async function advance(env, userId, chatId, sess, value) {
+  const data = JSON.parse(sess.data);
+  const s = FLOWS[sess.flow][sess.step];
+  data[s.key] = value;
+  // رویداد یک‌روزه: پایان = شروع
+  if (sess.flow === "event" && s.key === "end" && !value) data.end = data.start;
+  const next = sess.step + 1;
+  if (next < FLOWS[sess.flow].length) {
+    await saveSession(env, userId, sess.flow, next, data);
+    return askStep(env, chatId, sess.flow, next);
+  }
+  await saveSession(env, userId, sess.flow, next, data);
+  return tg(env, "sendMessage", { chat_id: chatId, text: `خلاصه:\n${summary(sess.flow, data)}\n\nثبت بشه؟`, reply_markup: confirmButtons });
+}
+
+// متن ادمین وقتی جریان فعاله. اگه جریان نبود، false برمی‌گردونه.
+export async function handleWizardText(env, message) {
+  const userId = message.from.id;
+  const sess = await getSession(env, userId);
+  if (!sess) return false;
+  const text = normalizeDigits((message.text || "").trim());
+  if (text.startsWith("/")) { await clearSession(env, userId); return false; }
+
+  const s = FLOWS[sess.flow][sess.step];
+  if (!s) return false;
+  if (s.buttons) {
+    await sendMessage(env, message.chat.id, "یکی از گزینه‌های زیر رو بزن.");
+    return true;
+  }
+  const value = s.parse(text);
+  if (value === null) {
+    await sendMessage(env, message.chat.id, s.err);
+    return true;
+  }
+  await advance(env, userId, message.chat.id, sess, value);
+  return true;
+}
+
+// دکمه‌ها: w:skip, w:kind:<k>, w:ok, w:cancel، و حذف: rm:<type>:<id> و rmy:<type>:<id>
+export async function handleCallback(env, cq) {
+  const userId = cq.from.id;
+  const chatId = cq.message.chat.id;
+  const data = cq.data || "";
+  const answer = (text = "") => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text });
+
+  if (data.startsWith("rm:") || data.startsWith("rmy:")) {
+    const [prefix, type, id] = data.split(":");
+    const table = { event: "events", call: "contacts", link: "resources" }[type];
+    if (!table) return answer();
+    if (prefix === "rm") {
+      const row = await env.DB.prepare(`SELECT * FROM ${table} WHERE id = ?`).bind(Number(id)).first();
+      if (!row) return answer("پیدا نشد");
+      const label = row.title || row.name;
+      await answer();
+      return tg(env, "sendMessage", {
+        chat_id: chatId,
+        text: `حذف «${label}» تأیید بشه؟`,
+        reply_markup: { inline_keyboard: [[{ text: "بله، حذف", callback_data: `rmy:${type}:${id}` }, { text: "نه", callback_data: "w:cancel" }]] },
+      });
+    }
+    await env.DB.prepare(`DELETE FROM ${table} WHERE id = ?`).bind(Number(id)).run();
+    await audit(env, userId, `${type}_remove`, id);
+    await answer("حذف شد");
+    return tg(env, "sendMessage", { chat_id: chatId, text: "حذف شد." });
+  }
+
+  const sess = await getSession(env, userId);
+  if (data === "w:cancel") {
+    await clearSession(env, userId);
+    await answer();
+    return tg(env, "sendMessage", { chat_id: chatId, text: "لغو شد." });
+  }
+  if (!sess) return answer("این جریان دیگه فعال نیست");
+
+  if (data === "w:ok") {
+    const d = JSON.parse(sess.data);
+    if (sess.flow === "event") {
+      await env.DB.prepare("INSERT INTO events (start_date, end_date, title, kind) VALUES (?, ?, ?, ?)").bind(d.start, d.end || d.start, d.title, d.kind).run();
+    } else if (sess.flow === "call") {
+      await env.DB.prepare("INSERT INTO contacts (category, name, number, note) VALUES (?, ?, ?, ?)").bind(d.category, d.name, d.number, d.note || "").run();
+    } else {
+      await env.DB.prepare("INSERT INTO resources (category, title, url, note) VALUES (?, ?, ?, ?)").bind(d.category, d.title, d.url, d.note || "").run();
+    }
+    await audit(env, userId, `${sess.flow}_add`, JSON.stringify(d).slice(0, 300));
+    await clearSession(env, userId);
+    await answer("ثبت شد");
+    return tg(env, "sendMessage", { chat_id: chatId, text: "ثبت شد." });
+  }
+
+  if (data === "w:skip" && FLOWS[sess.flow][sess.step]?.optional) {
+    await answer();
+    // رویداد: خالی یعنی یک‌روزه؛ شماره و لینک: خالی یعنی بدون یادداشت
+    return advance(env, userId, chatId, sess, "");
+  }
+
+  if (data.startsWith("w:kind:") && sess && sess.flow === "event") {
+    const k = data.split(":")[2];
+    await answer();
+    return advance(env, userId, chatId, sess, KINDS[k] || KINDS.other);
+  }
+
+  return answer();
+}
+
+// لیست با دکمه‌ی حذف
+export async function removeList(env, chatId, type) {
+  const table = { event: "events", call: "contacts", link: "resources" }[type];
+  const { results } = await env.DB.prepare(`SELECT * FROM ${table} ORDER BY id DESC LIMIT 20`).all();
+  if (!results.length) return sendMessage(env, chatId, "چیزی برای حذف نیست.");
+  const rows = results.map((r) => {
+    const label = type === "event" ? `${faDate(r.start_date)} — ${r.title}` : type === "call" ? `${r.name}` : r.title;
+    return [{ text: `🗑 ${label}`.slice(0, 60), callback_data: `rm:${type}:${r.id}` }];
+  });
+  return tg(env, "sendMessage", { chat_id: chatId, text: "کدوم حذف بشه؟", reply_markup: { inline_keyboard: rows } });
+}

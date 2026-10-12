@@ -3,6 +3,7 @@ import { webhookSecret } from "./telegram.js";
 import { handleAdminMessage, parseCmd, PUBLIC_CMDS, runPublic } from "./commands.js";
 import { getSetting } from "./public.js";
 import { sendReminders } from "./reminders.js";
+import { handleCallback } from "./wizard.js";
 import { isAdmin } from "./admin.js";
 import { buildBackup } from "./admin.js";
 import { sendJsonDocument } from "./telegram.js";
@@ -83,6 +84,13 @@ async function handleTelegramWebhook(request, env) {
 
   const update = await request.json().catch(() => null);
   try {
+    if (update && update.callback_query) {
+      const cq = update.callback_query;
+      if (cq.message && cq.message.chat && cq.message.chat.type === "private" && (await isAdmin(env, cq.from.id))) {
+        await handleCallback(env, cq);
+      }
+      return new Response("ok", { status: 200 });
+    }
     const msg = update && update.message;
     if (msg && msg.chat) {
       if (msg.chat.type === "private") {
