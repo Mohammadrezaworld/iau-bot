@@ -1,5 +1,5 @@
 // مدیریت کلمات کلیدی اعلان کانال‌ها (فقط ادمین کامل). فهرست در settings با کلید keywords به‌صورت JSON ذخیره می‌شه.
-import { tg, sendMessage } from "./telegram.js";
+import { tg, sendMessage, tryDeleteMessage } from "./telegram.js";
 import { audit, getRole } from "./admin.js";
 import { keywordsList, normalizeForMatch } from "./channels.js";
 import { pushUndo } from "./undo.js";
@@ -46,6 +46,7 @@ export async function keywordCommand(env, chatId, userId, cmd, arg) {
     const rows = list
       .filter((k) => bytes(k) <= MAX_BYTES)
       .map((k) => [{ text: `❌ ${k}`.slice(0, 60), callback_data: `kw:c:${k}` }]);
+    rows.push([{ text: "بستن", callback_data: "kw:n" }]);
     return tg(env, "sendMessage", { chat_id: chatId, text: "کدوم حذف بشه؟", reply_markup: { inline_keyboard: rows } });
   }
   const target = list.find((k) => normalizeForMatch(k) === normalizeForMatch(w));
@@ -63,7 +64,10 @@ export async function handleKeywordCallback(env, cq) {
 
   if (!(await isFullAdmin(env, cq.from.id))) return answer("این کار برای سطح دسترسی شما نیست.");
 
-  if (data === "kw:n") return answer("لغو شد");
+  if (data === "kw:n") {
+    await tryDeleteMessage(env, chatId, cq.message.message_id);
+    return answer();
+  }
 
   if (data.startsWith("kw:c:")) {
     const w = data.slice(5);

@@ -148,6 +148,7 @@ export async function editList(env, chatId, type) {
     const label = type === "call" ? r.name : r.title;
     return [{ text: `✏️ ${label}`.slice(0, 60), callback_data: `ed:p:${type}:${r.id}` }];
   });
+  rows.push([{ text: "بستن", callback_data: "x:c" }]);
   return tg(env, "sendMessage", { chat_id: chatId, text: "کدوم ویرایش بشه؟", reply_markup: { inline_keyboard: rows } });
 }
 
@@ -295,5 +296,6 @@ export async function removeList(env, chatId, type) {
     const label = type === "event" ? `${faDate(r.start_date)} — ${r.title}` : type === "call" ? `${r.name}` : r.title;
     return [{ text: `❌ ${label}`.slice(0, 60), callback_data: `rm:${type}:${r.id}` }];
   });
+  rows.push([{ text: "بستن", callback_data: "x:c" }]);
   return tg(env, "sendMessage", { chat_id: chatId, text: "کدوم حذف بشه؟", reply_markup: { inline_keyboard: rows } });
 }

@@ -213,6 +213,7 @@ export async function jozveRemoveList(env, chatId) {
     ...exams.map((r) => ({ r, prefix: "e", label: `نمونه‌سوال: ${r.course} — ${r.professor}${r.title ? " — " + r.title : ""}` })),
   ].map((x) => [{ text: `❌ ${x.label}`.slice(0, 60), callback_data: `jrm:c:${x.prefix}${x.r.id}` }]);
   if (!rows.length) return sendMessage(env, chatId, "فایلی برای حذف نیست.");
+  rows.push([{ text: "بستن", callback_data: "jrm:n" }]);
   return tg(env, "sendMessage", { chat_id: chatId, text: "کدوم فایل حذف بشه؟", reply_markup: { inline_keyboard: rows } });
 }
 
@@ -222,7 +223,10 @@ export async function handleJozveRemoveCallback(env, cq) {
   const answer = (text = "") => ack(env, cq, text);
   const role = await getRole(env, cq.from.id);
   if (!role) return answer();
-  if (data === "jrm:n") return answer("لغو شد");
+  if (data === "jrm:n") {
+    await tryDeleteMessage(env, chatId, cq.message.message_id);
+    return answer();
+  }
 
   const parseRef = (raw) => {
     const isExam = raw.startsWith("e");
