@@ -200,3 +200,9 @@ CREATE TABLE IF NOT EXISTS exam_files (
 );
 CREATE INDEX IF NOT EXISTS exam_files_course ON exam_files (course, professor);
 
+-- دسته‌ی هر درس برای منوی /jozve (مثلاً دروس عمومی، معارف، دروس اختصاصی)
+CREATE TABLE IF NOT EXISTS course_categories (
+  course   TEXT PRIMARY KEY,
+  category TEXT NOT NULL
+);
+

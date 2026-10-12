@@ -112,7 +112,7 @@ async function handleTelegramWebhook(request, env) {
       const cq = update.callback_query;
       const data = cq.data || "";
       if (!cq.message || !cq.message.chat) return new Response("ok", { status: 200 });
-      if (data.startsWith("j:")) {
+      if (data.startsWith("j:") || data.startsWith("jk:")) {
         if (await isOurGroup(env, cq.message.chat.id)) await handleJozveCallback(env, cq);
       } else if (data.startsWith("m:")) {
         // منوی /metro در گروه؛ فقط همان گروه و فقط برای درخواست‌کننده (داخل handler چک می‌شه)

@@ -14,7 +14,7 @@ import { holidayCommand } from "./holidays.js";
 import { undoLast } from "./undo.js";
 import { setQuietCommand } from "./channels.js";
 import { editList } from "./wizard.js";
-import { jozveListText, jozveRemoveList } from "./jozve.js";
+import { jozveListText, jozveRemoveList, jozveCategoryCommand } from "./jozve.js";
 
 // دستورهایی که سطح content هم مجازه
 const CONTENT_CMDS = new Set([
@@ -23,7 +23,7 @@ const CONTENT_CMDS = new Set([
   "/call_add", "/call_edit", "/call_remove", "/call_list",
   "/link_add", "/link_edit", "/link_remove", "/link_list",
   "/event_add", "/event_remove", "/event_list",
-  "/jozve_list", "/jozve_remove",
+  "/jozve_list", "/jozve_remove", "/jozve_category",
 ]);
 
 export const PUBLIC_CMDS = ["/week", "/next", "/term", "/left", "/call", "/links", "/events", "/updates"];
@@ -56,6 +56,7 @@ const HELP = [
   "/keyword_remove [متن] — حذف کلمه‌ی کلیدی (بدون متن: لیست با دکمه)",
   "/jozve_list — تعداد جزوه‌ها به تفکیک درس و استاد",
   "/jozve_remove — حذف فایل از فهرست جزوه‌ها (با دکمه)",
+  "/jozve_category — فهرست دسته‌ی درس‌ها؛ تعیین: /jozve_category درس | دسته",
   "جزوه: فایل رو توی کانال خصوصی جزوه‌ها بفرست، با کپشن: درس | استاد | عنوان",
   "/holiday_list — فهرست تعطیلات",
   "/holiday_add ۱۴۰۵/۱۰/۰۲ عنوان — افزودن تعطیلی",
@@ -129,6 +130,8 @@ export async function handleAdminMessage(env, message) {
       return sendMessage(env, chatId, await jozveListText(env));
     case "/jozve_remove":
       return jozveRemoveList(env, chatId);
+    case "/jozve_category":
+      return jozveCategoryCommand(env, chatId, userId, arg);
     case "/holiday_list":
     case "/holiday_add":
     case "/holiday_remove":
