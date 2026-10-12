@@ -5,6 +5,7 @@ import { getSetting } from "./public.js";
 import { sendReminders } from "./reminders.js";
 import { handleCallback } from "./wizard.js";
 import { handleKeywordCallback } from "./keywords.js";
+import { handleHolidayCallback } from "./holidays.js";
 import { flushPosts } from "./channels.js";
 import { isAdmin } from "./admin.js";
 import { buildBackup } from "./admin.js";
@@ -115,6 +116,7 @@ async function handleTelegramWebhook(request, env) {
       } else if (cq.message.chat.type === "private" && (await isAdmin(env, cq.from.id))) {
         if (data.startsWith("mu:")) await handleMetroUploadCallback(env, cq);
         else if (data.startsWith("kw:")) await handleKeywordCallback(env, cq);
+        else if (data.startsWith("hol:")) await handleHolidayCallback(env, cq);
         else await handleCallback(env, cq);
       }
       return new Response("ok", { status: 200 });

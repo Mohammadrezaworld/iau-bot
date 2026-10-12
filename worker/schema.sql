@@ -156,3 +156,13 @@ CREATE TABLE IF NOT EXISTS metro_messages (
   delete_at_utc INTEGER NOT NULL,
   PRIMARY KEY (chat_id, message_id)
 );
+
+-- برگشت تغییرات (/undo): فقط ۵ تغییر آخر نگه داشته می‌شه
+CREATE TABLE IF NOT EXISTS undo_stack (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_utc INTEGER NOT NULL,
+  label       TEXT NOT NULL,
+  kind        TEXT NOT NULL,            -- 'setting' | 'holiday'
+  key         TEXT NOT NULL,
+  before      TEXT
+);

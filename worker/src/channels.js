@@ -1,6 +1,9 @@
 // ارسال پست‌های جدید کانال‌ها به گروه. پیام‌ها متن ساده‌ان (بدون parse_mode) تا محتوای کانال نتونه قالب‌بندی تلگرام رو بشکنه.
-import { tg } from "./telegram.js";
+import { tg, sendMessage } from "./telegram.js";
 import { getSetting } from "./public.js";
+import { audit } from "./admin.js";
+import { normalizeDigits } from "./jalali.js";
+import { pushUndo } from "./undo.js";
 
 const CHANNEL_LABELS = {
   "bale:iaut_fani": "بله – آزمایشگاه‌های دانشکده",
@@ -26,9 +29,27 @@ export function isImportant(text, keywords) {
   return keywords.some((k) => t.includes(normalizeForMatch(k)));
 }
 
-export function inTehranQuietHours(now = Date.now()) {
-  const hour = Number(new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Tehran", hour: "2-digit", hour12: false }).format(new Date(now)));
-  return hour >= 2 && hour < 6;
+// بازه‌ی سکوت از تنظیم quiet (مثلاً "2-6") خونده می‌شه؛ پیش‌فرض ۰۲ تا ۰۶ تهران
+export async function inTehranQuietHours(env, now = Date.now()) {
+  const raw = await getSetting(env, "quiet", "2-6");
+  const [start, end] = String(raw).split("-").map(Number);
+  const hour = Number(new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Tehran", hour: "2-digit", hour12: false }).format(new Date(now))) % 24;
+  return start < end ? hour >= start && hour < end : hour >= start || hour < end;
+}
+
+// /set_quiet ۰۲-۰۶ (ساعت شروع و پایان سکوت به وقت تهران)
+export async function setQuietCommand(env, chatId, userId, arg) {
+  const m = normalizeDigits(String(arg || "").trim()).match(/^(\d{1,2})\s*-\s*(\d{1,2})$/);
+  const a = m ? Number(m[1]) : NaN;
+  const b = m ? Number(m[2]) : NaN;
+  if (!m || a > 23 || b > 23 || a === b) return sendMessage(env, chatId, "فرمت: /set_quiet ۰۲-۰۶ (ساعت شروع و پایان، به وقت تهران)");
+  const prev = await env.DB.prepare("SELECT value FROM settings WHERE key = 'quiet'").first();
+  await pushUndo(env, `تغییر ساعت سکوت به ${a}-${b}`, "setting", "quiet", prev ? prev.value : null);
+  await env.DB.prepare(
+    "INSERT INTO settings (key, value) VALUES ('quiet', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  ).bind(`${a}-${b}`).run();
+  await audit(env, userId, "set_quiet", `${a}-${b}`);
+  return sendMessage(env, chatId, `ساعت سکوت روی ${a} تا ${b} تهران تنظیم شد.`);
 }
 
 export async function keywordsList(env) {
@@ -50,7 +71,7 @@ function chunkMessages(lines) {
 
 // پست‌های ارسال‌نشده‌ی یک کانال (یا همه‌ی کانال‌ها) رو به گروه می‌فرسته
 export async function flushPosts(env, source = null, channel = null) {
-  if (inTehranQuietHours()) return { skipped: "quiet_hours" };
+  if (await inTehranQuietHours(env)) return { skipped: "quiet_hours" };
   const groupId = await getSetting(env, "group_id", "");
   if (!groupId) return { skipped: "no_group" };
 

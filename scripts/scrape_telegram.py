@@ -9,7 +9,6 @@ import sys
 import httpx
 from bs4 import BeautifulSoup
 
-from quiet import in_quiet_hours
 from send_to_worker import send_posts
 
 CHANNELS = ["fanniBultan"]
@@ -49,10 +48,6 @@ def fetch_channel(name: str) -> list[dict]:
 
 
 def main() -> int:
-    if in_quiet_hours():
-        print(json.dumps({"skipped": "quiet_hours"}, ensure_ascii=False))
-        return 0
-
     failed = 0
     for ch in CHANNELS:
         try:

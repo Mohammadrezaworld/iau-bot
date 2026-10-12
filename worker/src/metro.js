@@ -3,6 +3,7 @@
 import { tg, sendMessage, tryDeleteMessage } from "./telegram.js";
 import { isAdmin, audit } from "./admin.js";
 import { tehranToday, faDate } from "./calendar.js";
+import { pushUndo } from "./undo.js";
 import {
   KIND_LABEL, MAX_FILE_BYTES, parseMetroWorkbook, summarize, tripsFor, minToHM, fa2,
 } from "./metro_parse.js";
@@ -265,6 +266,8 @@ export async function handleMetroUploadCallback(env, cq) {
   ).bind(nowS(), p.payload).first();
   await env.DB.prepare("UPDATE metro_versions SET is_active = 0 WHERE id != ? AND json_extract(data_json, '$.kind') = ?")
     .bind(row.id, data.kind).run();
+  const prevActive = await env.DB.prepare("SELECT value FROM settings WHERE key = ?").bind(`metro_active_${data.kind}`).first();
+  await pushUndo(env, `جابه‌جایی جدول «${KIND_LABEL[data.kind]}» به نسخه ${fa2(row.id)}`, "setting", `metro_active_${data.kind}`, prevActive ? prevActive.value : null);
   await env.DB.prepare(
     "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
   ).bind(`metro_active_${data.kind}`, String(row.id)).run();

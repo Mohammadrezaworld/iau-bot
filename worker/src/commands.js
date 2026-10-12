@@ -10,6 +10,10 @@ import { faDate } from "./calendar.js";
 import { handleManage, publicContacts, publicResources, publicEvents, MANAGE_HELP } from "./manage.js";
 import { handleMetroDocument, metroInfoText } from "./metro.js";
 import { keywordCommand } from "./keywords.js";
+import { holidayCommand } from "./holidays.js";
+import { undoLast } from "./undo.js";
+import { setQuietCommand } from "./channels.js";
+import { editList } from "./wizard.js";
 
 // دستورهایی که سطح content هم مجازه
 const CONTENT_CMDS = new Set([
@@ -48,6 +52,11 @@ const HELP = [
   "/keyword_list — کلمات کلیدی اعلان کانال‌ها",
   "/keyword_add متن — افزودن کلمه‌ی کلیدی",
   "/keyword_remove [متن] — حذف کلمه‌ی کلیدی (بدون متن: لیست با دکمه)",
+  "/holiday_list — فهرست تعطیلات",
+  "/holiday_add ۱۴۰۵/۱۰/۰۲ عنوان — افزودن تعطیلی",
+  "/holiday_remove [تاریخ] — حذف تعطیلی (بدون تاریخ: لیست با دکمه)",
+  "/set_quiet ۰۲-۰۶ — ساعت سکوت کانال‌ها (به وقت تهران)",
+  "/undo — برگشت آخرین تغییر کلمات، تعطیلات یا جدول مترو (۵ تغییر آخر)",
   "جدول مترو: فایل xlsx را همین‌جا در پیوی بفرست (فقط ادمین کامل)؛ پیش‌نمایش و تأیید دارد.",
   "/help — همین راهنما",
   "/cancel — لغو کار نیمه‌تمام",
@@ -97,6 +106,8 @@ export async function handleAdminMessage(env, message) {
   // افزودن بدون آرگومان: مرحله‌به‌مرحله. حذف بدون آرگومان: لیست با دکمه
   const wizardFlows = { "/event_add": "event", "/call_add": "call", "/link_add": "link" };
   if (wizardFlows[cmd] && !arg) return startWizard(env, userId, chatId, wizardFlows[cmd]);
+  const editTypes = { "/call_edit": "call", "/link_edit": "link" };
+  if (editTypes[cmd] && !arg) return editList(env, chatId, editTypes[cmd]);
   const removeTypes = { "/event_remove": "event", "/call_remove": "call", "/link_remove": "link" };
   if (removeTypes[cmd] && !arg) return removeList(env, chatId, removeTypes[cmd]);
 
@@ -109,6 +120,14 @@ export async function handleAdminMessage(env, message) {
       return sendMessage(env, chatId, HELP);
     case "/status":
       return sendMessage(env, chatId, await statusText(env));
+    case "/holiday_list":
+    case "/holiday_add":
+    case "/holiday_remove":
+      return holidayCommand(env, chatId, userId, cmd, arg);
+    case "/undo":
+      return sendMessage(env, chatId, await undoLast(env, userId));
+    case "/set_quiet":
+      return setQuietCommand(env, chatId, userId, arg);
     case "/keyword_list":
     case "/keyword_add":
     case "/keyword_remove":
