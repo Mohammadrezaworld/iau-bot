@@ -4,15 +4,17 @@ import { isAdmin, audit, buildBackup, statusText, logText } from "./admin.js";
 import { answerPublic, getSetting } from "./public.js";
 import { parseDateInput, normalizeDigits } from "./jalali.js";
 import { startWizard, handleWizardText, removeList } from "./wizard.js";
+import { updatesText, flushPosts } from "./channels.js";
 import { faDate } from "./calendar.js";
 import { handleManage, publicContacts, publicResources, publicEvents, MANAGE_HELP } from "./manage.js";
 
-export const PUBLIC_CMDS = ["/week", "/next", "/term", "/left", "/call", "/links", "/events"];
+export const PUBLIC_CMDS = ["/week", "/next", "/term", "/left", "/call", "/links", "/events", "/updates"];
 
 export async function runPublic(env, chatId, cmd) {
   if (["/call"].includes(cmd)) return sendMessage(env, chatId, await publicContacts(env));
   if (["/links"].includes(cmd)) return sendMessage(env, chatId, await publicResources(env));
   if (["/events"].includes(cmd)) return sendMessage(env, chatId, await publicEvents(env));
+  if (["/updates"].includes(cmd)) return sendMessage(env, chatId, await updatesText(env));
   return answerPublic(env, chatId, cmd);
 }
 
