@@ -1,12 +1,22 @@
 // دستورهای ادمین در DM. کاربرهای عادی در DM هیچ پاسخی نمی‌گیرن.
 import { sendMessage, sendJsonDocument } from "./telegram.js";
-import { isAdmin, isOwner, audit, buildBackup, statusText, logText } from "./admin.js";
+import { isAdmin, isOwner, audit, buildBackup, statusText, logText, getRole } from "./admin.js";
 import { answerPublic, getSetting } from "./public.js";
 import { parseDateInput, normalizeDigits } from "./jalali.js";
 import { startWizard, handleWizardText, removeList } from "./wizard.js";
 import { updatesText, flushPosts } from "./channels.js";
+import { tg } from "./telegram.js";
 import { faDate } from "./calendar.js";
 import { handleManage, publicContacts, publicResources, publicEvents, MANAGE_HELP } from "./manage.js";
+
+// دستورهایی که سطح content هم مجازه
+const CONTENT_CMDS = new Set([
+  "/start", "/help", "/cancel", "/ok", "/status",
+  "/call", "/links", "/events", "/updates",
+  "/call_add", "/call_edit", "/call_remove", "/call_list",
+  "/link_add", "/link_edit", "/link_remove", "/link_list",
+  "/event_add", "/event_remove", "/event_list",
+]);
 
 export const PUBLIC_CMDS = ["/week", "/next", "/term", "/left", "/call", "/links", "/events", "/updates"];
 
@@ -35,7 +45,7 @@ const HELP = [
   "/help — همین راهنما",
   "/cancel — لغو کار نیمه‌تمام",
   "/admins — فهرست ادمین‌ها (فقط مالک)",
-  "/admin_add شناسه — افزودن ادمین (فقط مالک)",
+  "/admin_add شناسه — افزودن ادمین و انتخاب سطح دسترسی (فقط مالک)",
   "/admin_remove شناسه — حذف ادمین (فقط مالک)",
   "",
   "افزودن رویداد/شماره/لینک: فقط دستور رو بزن (مثلاً /event_add) و مرحله‌به‌مرحله جواب بده.",
@@ -54,7 +64,12 @@ export async function handleAdminMessage(env, message) {
   // کاربر عادی: بی‌صدا نادیده گرفته می‌شه
   if (!(await isAdmin(env, userId))) return;
 
+  const role = await getRole(env, userId);
   const { cmd, arg } = parseCmd(message.text);
+
+  if (role === "content" && cmd.startsWith("/") && !CONTENT_CMDS.has(cmd)) {
+    return sendMessage(env, chatId, "این دستور برای سطح دسترسی شما نیست.");
+  }
 
   // اگه جریان مرحله‌به‌مرحله فعاله، متن ادمین جواب اون مرحله‌ست
   if (!cmd.startsWith("/") || cmd === "/cancel") {
@@ -99,17 +114,27 @@ export async function handleAdminMessage(env, message) {
     }
     case "/admins": {
       if (!(await isOwner(env, userId))) return;
-      const { results } = await env.DB.prepare("SELECT user_id FROM admins ORDER BY user_id").all();
-      const list = [`مالک: ${env.OWNER_ID}`, ...results.map((r) => `ادمین: ${r.user_id}`)];
+      const { results } = await env.DB.prepare(
+        "SELECT a.user_id, COALESCE(r.role, 'full') AS role FROM admins a LEFT JOIN admin_roles r ON r.user_id = a.user_id ORDER BY a.user_id"
+      ).all();
+      const roleName = { full: "کامل", content: "محتوا" };
+      const list = [`مالک: ${env.OWNER_ID}`, ...results.map((r) => `${r.user_id} — ${roleName[r.role] || r.role}`)];
       return sendMessage(env, chatId, list.join("\n"));
     }
     case "/admin_add": {
       if (!(await isOwner(env, userId))) return; // فقط مالک، و بی‌صدا برای بقیه
       const id = normalizeDigits(arg);
       if (!/^\d{5,15}$/.test(id)) return sendMessage(env, chatId, "فرمت: /admin_add 123456789 (شناسه‌ی عددی تلگرام)");
-      await env.DB.prepare("INSERT OR IGNORE INTO admins (user_id, is_owner) VALUES (?, 0)").bind(Number(id)).run();
-      await audit(env, userId, "admin_add", id);
-      return sendMessage(env, chatId, `ادمین ${id} اضافه شد.`);
+      return tg(env, "sendMessage", {
+        chat_id: chatId,
+        text: `سطح دسترسی ادمین ${id} رو انتخاب کن:\n• کامل: همه‌ی دستورها\n• محتوا: فقط جزوه، شماره، لینک و رویداد`,
+        reply_markup: {
+          inline_keyboard: [[
+            { text: "کامل", callback_data: `adm:full:${id}` },
+            { text: "محتوا", callback_data: `adm:content:${id}` },
+          ], [{ text: "لغو", callback_data: "w:cancel" }]],
+        },
+      });
     }
     case "/admin_remove": {
       if (!(await isOwner(env, userId))) return;
@@ -117,6 +142,7 @@ export async function handleAdminMessage(env, message) {
       if (!/^\d{5,15}$/.test(id)) return sendMessage(env, chatId, "فرمت: /admin_remove 123456789");
       if (id === String(env.OWNER_ID)) return sendMessage(env, chatId, "مالک قابل حذف نیست.");
       await env.DB.prepare("DELETE FROM admins WHERE user_id = ?").bind(Number(id)).run();
+      await env.DB.prepare("DELETE FROM admin_roles WHERE user_id = ?").bind(Number(id)).run();
       await audit(env, userId, "admin_remove", id);
       return sendMessage(env, chatId, `ادمین ${id} حذف شد.`);
     }

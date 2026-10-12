@@ -135,3 +135,9 @@ CREATE TABLE IF NOT EXISTS admin_sessions (
 INSERT INTO settings (key, value) SELECT 'baseline_v1', 'pending' WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'baseline_v1');
 UPDATE posts SET sent_at_utc = first_seen_utc WHERE sent_at_utc IS NULL AND EXISTS (SELECT 1 FROM settings WHERE key = 'baseline_v1' AND value = 'pending');
 UPDATE settings SET value = 'done' WHERE key = 'baseline_v1' AND value = 'pending';
+
+-- سطح دسترسی ادمین‌ها: full (همه‌ی دستورها) یا content (فقط جزوه/شماره/لینک/رویداد)
+CREATE TABLE IF NOT EXISTS admin_roles (
+  user_id INTEGER PRIMARY KEY,
+  role    TEXT NOT NULL
+);
