@@ -9,6 +9,7 @@ import { tg } from "./telegram.js";
 import { faDate } from "./calendar.js";
 import { handleManage, publicContacts, publicResources, publicEvents, MANAGE_HELP } from "./manage.js";
 import { handleMetroDocument, metroInfoText } from "./metro.js";
+import { keywordCommand } from "./keywords.js";
 
 // دستورهایی که سطح content هم مجازه
 const CONTENT_CMDS = new Set([
@@ -44,6 +45,9 @@ const HELP = [
   "/set_semester ۱۴۰۵-۰۶-۲۱ — شروع ترم (شنبه، شمسی)",
   "/set_group -100… — شناسه‌ی گروه",
   "/metro_info — جدول‌های مترو فعال",
+  "/keyword_list — کلمات کلیدی اعلان کانال‌ها",
+  "/keyword_add متن — افزودن کلمه‌ی کلیدی",
+  "/keyword_remove [متن] — حذف کلمه‌ی کلیدی (بدون متن: لیست با دکمه)",
   "جدول مترو: فایل xlsx را همین‌جا در پیوی بفرست (فقط ادمین کامل)؛ پیش‌نمایش و تأیید دارد.",
   "/help — همین راهنما",
   "/cancel — لغو کار نیمه‌تمام",
@@ -105,6 +109,10 @@ export async function handleAdminMessage(env, message) {
       return sendMessage(env, chatId, HELP);
     case "/status":
       return sendMessage(env, chatId, await statusText(env));
+    case "/keyword_list":
+    case "/keyword_add":
+    case "/keyword_remove":
+      return keywordCommand(env, chatId, userId, cmd, arg);
     case "/metro_info":
       return sendMessage(env, chatId, await metroInfoText(env));
     case "/log":
