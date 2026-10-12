@@ -1,6 +1,8 @@
 // Worker: webhook تلگرام، دریافت پست‌های اسکرپ‌شده (/ingest)، پشتیبان روزانه.
 import { webhookSecret } from "./telegram.js";
-import { handleAdminMessage } from "./commands.js";
+import { handleAdminMessage, parseCmd, PUBLIC_CMDS } from "./commands.js";
+import { answerPublic, getSetting } from "./public.js";
+import { isAdmin } from "./admin.js";
 import { buildBackup } from "./admin.js";
 import { sendJsonDocument } from "./telegram.js";
 
@@ -50,6 +52,27 @@ async function handleIngest(request, env) {
   return json({ ok: true, received: posts.length, new: newCount });
 }
 
+async function isOurGroup(env, chatId) {
+  const groupId = await getSetting(env, "group_id", "");
+  return groupId !== "" && String(chatId) === String(groupId);
+}
+
+// گروه: فقط دستورهای عمومی، با ضداسپم ۳۰ ثانیه‌ای برای هر کاربر (ادمین‌ها مستثنی)
+async function handleGroupMessage(env, msg) {
+  const { cmd } = parseCmd(msg.text);
+  if (!PUBLIC_CMDS.includes(cmd) || !msg.from) return;
+  const userId = msg.from.id;
+  if (!(await isAdmin(env, userId))) {
+    const nowS = Math.floor(Date.now() / 1000);
+    const row = await env.DB.prepare("SELECT last_utc FROM user_cooldowns WHERE user_id = ?").bind(userId).first();
+    if (row && nowS - row.last_utc < 30) return; // بی‌صدا
+    await env.DB.prepare(
+      "INSERT INTO user_cooldowns (user_id, last_utc) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_utc = excluded.last_utc"
+    ).bind(userId, nowS).run();
+  }
+  await answerPublic(env, msg.chat.id, cmd);
+}
+
 async function handleTelegramWebhook(request, env) {
   // Telegram رمز secret_token رو توی هدر می‌فرسته؛ اگه نبود، درخواست جعلیه
   const expected = await webhookSecret(env);
@@ -59,9 +82,13 @@ async function handleTelegramWebhook(request, env) {
 
   const update = await request.json().catch(() => null);
   try {
-    // فعلاً فقط DM. پیام‌های گروه در مرحله‌ی بعد اضافه می‌شن.
-    if (update && update.message && update.message.chat && update.message.chat.type === "private") {
-      await handleAdminMessage(env, update.message);
+    const msg = update && update.message;
+    if (msg && msg.chat) {
+      if (msg.chat.type === "private") {
+        await handleAdminMessage(env, msg);
+      } else if (await isOurGroup(env, msg.chat.id)) {
+        await handleGroupMessage(env, msg);
+      }
     }
   } catch (err) {
     // خطا رو لاگ می‌کنیم ولی 200 برمی‌گردونیم تا تلگرام بی‌خودی تکرار نکنه
