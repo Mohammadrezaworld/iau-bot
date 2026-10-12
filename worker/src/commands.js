@@ -15,6 +15,7 @@ import { undoLast } from "./undo.js";
 import { setQuietCommand } from "./channels.js";
 import { editList } from "./wizard.js";
 import { jozveListText, jozveRemoveList, jozveCategoryCommand } from "./jozve.js";
+import { scrapeCommand } from "./scrape.js";
 
 // دستورهایی که سطح content هم مجازه
 const CONTENT_CMDS = new Set([
@@ -63,6 +64,7 @@ const HELP = [
   "/holiday_remove [تاریخ] — حذف تعطیلی (بدون تاریخ: لیست با دکمه)",
   "/set_quiet ۰۲-۰۶ — ساعت سکوت کانال‌ها (به وقت تهران)",
   "/undo — برگشت آخرین تغییر کلمات، تعطیلات یا جدول مترو (۵ تغییر آخر)",
+  "/scrape — اجرای دستی اسکرپ بله و تلگرام (هر ۲۰ دقیقه یک‌بار)",
   "جدول مترو: فایل xlsx را همین‌جا در پیوی بفرست (فقط ادمین کامل)؛ پیش‌نمایش و تأیید دارد.",
   "/help — همین راهنما",
   "/cancel — لغو کار نیمه‌تمام",
@@ -136,6 +138,8 @@ export async function handleAdminMessage(env, message) {
     case "/holiday_add":
     case "/holiday_remove":
       return holidayCommand(env, chatId, userId, cmd, arg);
+    case "/scrape":
+      return scrapeCommand(env, chatId, userId);
     case "/undo":
       return sendMessage(env, chatId, await undoLast(env, userId));
     case "/set_quiet":

@@ -54,6 +54,16 @@ jobs:
       - name: Set bot token secret
         run: printf "%s" "$TELEGRAM_BOT_TOKEN" | npx wrangler secret put TELEGRAM_BOT_TOKEN
 
+      - name: Set GitHub dispatch token (optional, for /scrape)
+        env:
+          GH_DISPATCH_TOKEN: ${{ secrets.GH_DISPATCH_TOKEN }}
+        run: |
+          if [ -n "$GH_DISPATCH_TOKEN" ]; then
+            printf "%s" "$GH_DISPATCH_TOKEN" | npx wrangler secret put GH_DISPATCH_TOKEN
+          else
+            echo "GH_DISPATCH_TOKEN not set; /scrape will report it is not configured."
+          fi
+
       - name: Deploy worker
         run: npx wrangler deploy
 
