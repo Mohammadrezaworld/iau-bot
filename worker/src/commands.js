@@ -1,6 +1,6 @@
 // دستورهای ادمین در DM. کاربرهای عادی در DM هیچ پاسخی نمی‌گیرن.
 import { sendMessage, sendJsonDocument } from "./telegram.js";
-import { isAdmin, audit, buildBackup, statusText, logText } from "./admin.js";
+import { isAdmin, isOwner, audit, buildBackup, statusText, logText } from "./admin.js";
 import { answerPublic, getSetting } from "./public.js";
 import { parseDateInput, normalizeDigits } from "./jalali.js";
 import { startWizard, handleWizardText, removeList } from "./wizard.js";
@@ -34,6 +34,9 @@ const HELP = [
   "/set_group -100… — شناسه‌ی گروه",
   "/help — همین راهنما",
   "/cancel — لغو کار نیمه‌تمام",
+  "/admins — فهرست ادمین‌ها (فقط مالک)",
+  "/admin_add شناسه — افزودن ادمین (فقط مالک)",
+  "/admin_remove شناسه — حذف ادمین (فقط مالک)",
   "",
   "افزودن رویداد/شماره/لینک: فقط دستور رو بزن (مثلاً /event_add) و مرحله‌به‌مرحله جواب بده.",
   "حذف: /event_remove یا /call_remove یا /link_remove رو بزن و از دکمه‌ها انتخاب کن.",
@@ -93,6 +96,29 @@ export async function handleAdminMessage(env, message) {
         .bind(iso).run();
       await audit(env, userId, "set_semester", `${old} -> ${iso}`);
       return sendMessage(env, chatId, `شروع ترم ثبت شد: ${faDate(iso)}`);
+    }
+    case "/admins": {
+      if (!(await isOwner(env, userId))) return;
+      const { results } = await env.DB.prepare("SELECT user_id FROM admins ORDER BY user_id").all();
+      const list = [`مالک: ${env.OWNER_ID}`, ...results.map((r) => `ادمین: ${r.user_id}`)];
+      return sendMessage(env, chatId, list.join("\n"));
+    }
+    case "/admin_add": {
+      if (!(await isOwner(env, userId))) return; // فقط مالک، و بی‌صدا برای بقیه
+      const id = normalizeDigits(arg);
+      if (!/^\d{5,15}$/.test(id)) return sendMessage(env, chatId, "فرمت: /admin_add 123456789 (شناسه‌ی عددی تلگرام)");
+      await env.DB.prepare("INSERT OR IGNORE INTO admins (user_id, is_owner) VALUES (?, 0)").bind(Number(id)).run();
+      await audit(env, userId, "admin_add", id);
+      return sendMessage(env, chatId, `ادمین ${id} اضافه شد.`);
+    }
+    case "/admin_remove": {
+      if (!(await isOwner(env, userId))) return;
+      const id = normalizeDigits(arg);
+      if (!/^\d{5,15}$/.test(id)) return sendMessage(env, chatId, "فرمت: /admin_remove 123456789");
+      if (id === String(env.OWNER_ID)) return sendMessage(env, chatId, "مالک قابل حذف نیست.");
+      await env.DB.prepare("DELETE FROM admins WHERE user_id = ?").bind(Number(id)).run();
+      await audit(env, userId, "admin_remove", id);
+      return sendMessage(env, chatId, `ادمین ${id} حذف شد.`);
     }
     case "/set_group": {
       const gid = normalizeDigits(arg);
