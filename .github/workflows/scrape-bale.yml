@@ -2,7 +2,10 @@ name: scrape-bale
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    # ساعت سکوت ۰۲ تا ۰۶ تهران (۲۲:۳۰ تا ۰۲:۳۰ UTC) اجرا نمی‌شه
+    - cron: "0,30 3-21 * * *"
+    - cron: "0 22 * * *"
+    - cron: "30 2 * * *"
   workflow_dispatch:
 
 jobs:

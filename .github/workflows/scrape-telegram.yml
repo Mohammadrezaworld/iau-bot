@@ -2,7 +2,11 @@ name: scrape-telegram
 
 on:
   schedule:
-    - cron: "*/20 * * * *"
+    # ساعت سکوت ۰۲ تا ۰۶ تهران (۲۲:۳۰ تا ۰۲:۳۰ UTC) اجرا نمی‌شه
+    - cron: "*/20 3-21 * * *"
+    - cron: "0 22 * * *"
+    - cron: "20 22 * * *"
+    - cron: "40 2 * * *"
   workflow_dispatch:
 
 jobs:
