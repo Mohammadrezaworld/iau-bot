@@ -186,3 +186,17 @@ CREATE TABLE IF NOT EXISTS jozve_usage (
   at_utc  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS jozve_usage_user ON jozve_usage (user_id, at_utc);
+
+-- نمونه‌سوال پایان‌ترم‌ها: جدول جدا از جزوه‌ها؛ ترم در ستون title
+CREATE TABLE IF NOT EXISTS exam_files (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  course          TEXT NOT NULL,
+  professor       TEXT NOT NULL,
+  title           TEXT NOT NULL DEFAULT '',
+  file_name       TEXT NOT NULL DEFAULT '',
+  file_size       INTEGER NOT NULL DEFAULT 0,
+  channel_msg_id  INTEGER NOT NULL UNIQUE,
+  created_utc     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS exam_files_course ON exam_files (course, professor);
+
