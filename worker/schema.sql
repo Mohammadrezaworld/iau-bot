@@ -121,3 +121,12 @@ CREATE TABLE IF NOT EXISTS pending_actions (
   payload     TEXT NOT NULL,
   expires_utc INTEGER NOT NULL
 );
+
+-- جریان مرحله‌به‌مرحله‌ی ادمین در DM (افزودن رویداد، شماره، لینک)
+CREATE TABLE IF NOT EXISTS admin_sessions (
+  user_id     INTEGER PRIMARY KEY,
+  flow        TEXT NOT NULL,
+  step        INTEGER NOT NULL DEFAULT 0,
+  data        TEXT NOT NULL DEFAULT '{}',
+  updated_utc INTEGER NOT NULL
+);
