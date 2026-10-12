@@ -39,3 +39,14 @@ export async function webhookSecret(env) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("hook:" + env.TELEGRAM_BOT_TOKEN));
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 48);
 }
+
+// حذف پیام دستوری کاربر در گروه. فقط برای پیام‌هایی که ربات مجازه (دستورها)؛ خطا رو بی‌صدا رد می‌کنه.
+export async function tryDeleteMessage(env, chatId, messageId) {
+  try {
+    await tg(env, "deleteMessage", { chat_id: chatId, message_id: messageId });
+    return true;
+  } catch (err) {
+    console.error("delete_error", err && err.message ? err.message : "unknown");
+    return false;
+  }
+}

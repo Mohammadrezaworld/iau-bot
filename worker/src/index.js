@@ -1,5 +1,5 @@
 // Worker: webhook تلگرام، دریافت پست‌های اسکرپ‌شده (/ingest)، پشتیبان روزانه.
-import { webhookSecret } from "./telegram.js";
+import { webhookSecret, tryDeleteMessage } from "./telegram.js";
 import { handleAdminMessage, parseCmd, PUBLIC_CMDS, runPublic } from "./commands.js";
 import { getSetting } from "./public.js";
 import { sendReminders } from "./reminders.js";
@@ -77,15 +77,20 @@ async function handleGroupMessage(env, msg) {
   const { cmd } = parseCmd(msg.text);
   if (!PUBLIC_CMDS.includes(cmd) || !msg.from) return;
   const userId = msg.from.id;
+  // پیام دستوری کاربر بعد از پردازش پاک می‌شه (ربات فقط پیام‌های دستوری رو پاک می‌کنه)
   if (!(await isAdmin(env, userId))) {
     const nowS = Math.floor(Date.now() / 1000);
     const row = await env.DB.prepare("SELECT last_utc FROM user_cooldowns WHERE user_id = ?").bind(userId).first();
-    if (row && nowS - row.last_utc < 30) return; // بی‌صدا
+    if (row && nowS - row.last_utc < 30) {
+      await tryDeleteMessage(env, msg.chat.id, msg.message_id); // اسپم: بی‌صدا پاک می‌شه
+      return;
+    }
     await env.DB.prepare(
       "INSERT INTO user_cooldowns (user_id, last_utc) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_utc = excluded.last_utc"
     ).bind(userId, nowS).run();
   }
   await runPublic(env, msg.chat.id, cmd);
+  await tryDeleteMessage(env, msg.chat.id, msg.message_id);
 }
 
 async function handleTelegramWebhook(request, env) {
