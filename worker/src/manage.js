@@ -1,11 +1,12 @@
 // مدیریت شماره‌ها، لینک‌ها و رویدادها توسط ادمین (DM). حذف‌ها با تأیید ۶۰ ثانیه‌ای.
 import { audit } from "./admin.js";
 import { faDate, faNum, tehranToday, daysBetween } from "./calendar.js";
+import { parseDateInput, normalizeDigits } from "./jalali.js";
 
 const nowUtc = () => Math.floor(Date.now() / 1000);
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-const parts = (arg) => arg.split("|").map((s) => s.trim());
+const parts = (arg) => normalizeDigits(arg).split("|").map((s) => s.trim());
 
 export const MANAGE_HELP = [
   "شماره‌ها:",
@@ -21,7 +22,7 @@ export const MANAGE_HELP = [
   "/link_list",
   "",
   "رویدادها:",
-  "/event_add YYYY-MM-DD | YYYY-MM-DD(پایان، اختیاری) | عنوان | نوع",
+  "/event_add ۱۴۰۵-۰۷-۲۸ | ۱۴۰۵-۰۷-۳۰ | عنوان | نوع   (پایان اختیاریه، تاریخ شمسی)",
   "/event_remove شناسه",
   "/event_list",
   "",
@@ -50,7 +51,7 @@ export async function listResources(env) {
 export async function listEvents(env) {
   const { results } = await env.DB.prepare("SELECT * FROM events ORDER BY start_date, id").all();
   if (!results.length) return "هنوز رویدادی ثبت نشده.";
-  return results.map((e) => `${e.id} | ${e.start_date}${e.end_date !== e.start_date ? " تا " + e.end_date : ""} | ${e.title}${e.kind ? " (" + e.kind + ")" : ""}`).join("\n");
+  return results.map((e) => `${e.id} | ${faDate(e.start_date)}${e.end_date !== e.start_date ? " تا " + faDate(e.end_date) : ""} | ${e.title}${e.kind ? " (" + e.kind + ")" : ""}`).join("\n");
 }
 
 // پردازش دستورهای مدیریتی. اگه دستور مربوط به این بخش نبود، null برمی‌گردونه.
@@ -107,10 +108,14 @@ export async function handleManage(env, userId, cmd, arg) {
       return listResources(env);
 
     case "/event_add": {
-      const [start, end, title, kind = ""] = parts(arg);
-      if (!start || !DATE_RE.test(start)) return "فرمت: /event_add YYYY-MM-DD | YYYY-MM-DD | عنوان | نوع";
-      const endDate = end && DATE_RE.test(end) ? end : start;
-      if (!title) return "عنوان رویداد لازمه.";
+      const [startRaw, endRaw = "", title, kind = ""] = parts(arg);
+      const start = parseDateInput(startRaw);
+      if (!start) return "تاریخ شروع درست نیست. مثال: /event_add ۱۴۰۵-۰۷-۲۸ | | میان‌ترم | امتحان";
+      const endParsed = endRaw ? parseDateInput(endRaw) : null;
+      if (endRaw && !endParsed) return "تاریخ پایان درست نیست. یا خالی بذار یا مثل ۱۴۰۵-۰۷-۳۰ بنویس.";
+      const endDate = endParsed || start;
+      if (endDate < start) return "تاریخ پایان نباید قبل از شروع باشه.";
+      if (!title) return "عنوان رویداد لازمه. مثال: /event_add ۱۴۰۵-۰۷-۲۸ | | میان‌ترم | امتحان";
       await env.DB.prepare("INSERT INTO events (start_date, end_date, title, kind) VALUES (?, ?, ?, ?)").bind(start, endDate, title, kind).run();
       await audit(env, userId, "event_add", `${start} ${title}`);
       return "رویداد ثبت شد.";

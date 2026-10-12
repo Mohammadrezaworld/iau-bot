@@ -2,6 +2,8 @@
 import { sendMessage, sendJsonDocument } from "./telegram.js";
 import { isAdmin, audit, buildBackup, statusText, logText } from "./admin.js";
 import { answerPublic, getSetting } from "./public.js";
+import { parseDateInput, normalizeDigits } from "./jalali.js";
+import { faDate } from "./calendar.js";
 import { handleManage, publicContacts, publicResources, publicEvents, MANAGE_HELP } from "./manage.js";
 
 export const PUBLIC_CMDS = ["/week", "/next", "/term", "/left", "/call", "/links", "/events"];
@@ -25,7 +27,7 @@ const HELP = [
   "/status — وضعیت ربات",
   "/log — ۲۰ تغییر آخر",
   "/backup — فایل پشتیبان",
-  "/set_semester YYYY-MM-DD — شروع ترم (شنبه)",
+  "/set_semester ۱۴۰۵-۰۶-۲۱ — شروع ترم (شنبه، شمسی)",
   "/set_group -100… — شناسه‌ی گروه",
   "/help — همین راهنما",
   "",
@@ -61,18 +63,20 @@ export async function handleAdminMessage(env, message) {
       await audit(env, userId, "backup", "manual");
       return sendJsonDocument(env, chatId, "iaut-backup.json", await buildBackup(env), "پشتیبان دستی");
     case "/set_semester": {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(arg)) return sendMessage(env, chatId, "فرمت درست: /set_semester 2026-09-12");
+      const iso = parseDateInput(arg);
+      if (!iso) return sendMessage(env, chatId, "فرمت درست: /set_semester ۱۴۰۵-۰۶-۲۱ (شمسی)");
       const old = await getSetting(env, "semester_start", "");
       await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('semester_start', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-        .bind(arg).run();
-      await audit(env, userId, "set_semester", `${old} -> ${arg}`);
-      return sendMessage(env, chatId, `شروع ترم ثبت شد: ${arg}`);
+        .bind(iso).run();
+      await audit(env, userId, "set_semester", `${old} -> ${iso}`);
+      return sendMessage(env, chatId, `شروع ترم ثبت شد: ${faDate(iso)}`);
     }
     case "/set_group": {
-      if (!/^-?\d{5,20}$/.test(arg)) return sendMessage(env, chatId, "فرمت درست: /set_group -1001234567890");
+      const gid = normalizeDigits(arg);
+      if (!/^-?\d{5,20}$/.test(gid)) return sendMessage(env, chatId, "فرمت درست: /set_group -1001234567890");
       await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('group_id', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-        .bind(arg).run();
-      await audit(env, userId, "set_group", arg);
+        .bind(gid).run();
+      await audit(env, userId, "set_group", gid);
       return sendMessage(env, chatId, "شناسه‌ی گروه ثبت شد.");
     }
     default:
