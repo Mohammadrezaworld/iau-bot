@@ -2,13 +2,16 @@
 // ربات پست کانال رو ثبت می‌کنه و کاربر در گروه با دکمه‌ها انتخاب می‌کنه؛ فایل با copyMessage بدون نام کانال فرستاده می‌شه.
 import { tg, sendMessage, tryDeleteMessage } from "./telegram.js";
 import { isAdmin, getRole, audit } from "./admin.js";
+import { recordEvent } from "./monitor.js";
 
 const RESULT_TTL = 300;
 const LINKS_TTL = 600; // پیام لیست لینک‌های فایل‌های قبلی بعد از ۱۰ دقیقه پاک می‌شه
-const MENU_TTL = 60; // منو و دستور کاربر بعد از ۶۰ ثانیه پاک می‌شن
+const MENU_TTL = 60; // منو و دستور کاربر بعد از ۶۰ ثانیه بی‌فعالیتی پاک می‌شن (هر کلیک روی منو این مهلت رو از نو می‌ده)
+const LIMIT_TTL = 15; // پیام سقف درخواست بعد از ۱۵ ثانیه پاک می‌شه
 const JOZVE_MENU_KEY = "jozve_menu_msg";
 const RATE_WINDOW = 600;
-const RATE_MAX = 3;
+const RATE_MAX = 2; // سقف مشترک: باز کردن /jozve و گرفتن فایل با هم، برای کاربر عادی
+const LIMIT_TEXT = "لطفاً کمی صبر کن؛ هر نفر حداکثر ۲ درخواست توی ۱۰ دقیقه می‌تونه بده.";
 const MAX_NAME_BYTES = 29; // callback_data حداکثر ۶۴ بایته: «j:ef:» + درس + «|» + استاد
 const MAX_FILES_PER_SEND = 10;
 const EXAM_WORD = "نمونه سوال";
@@ -65,13 +68,41 @@ async function rememberMsg(env, chatId, msgId, ttl = RESULT_TTL) {
   ).bind(chatId, msgId, nowS() + ttl).run();
 }
 
-// ویرایش منو فقط محتوا رو عوض می‌کنه؛ زمان حذفش تمدید نمی‌شه (منو ۶۰ ثانیه بعد از ساخته‌شدن پاک می‌شه)
+// ویرایش منو فقط محتوا رو عوض می‌کنه؛ زمان حذفش رو touchMenu جدا تمدید می‌کنه
 async function editTemp(env, chatId, msgId, text, markup) {
   try {
     await tg(env, "editMessageText", { chat_id: chatId, message_id: msgId, text, reply_markup: markup });
   } catch (err) {
     console.error("jozve_edit", err && err.message ? err.message : "unknown");
   }
+}
+
+// هر کلیک روی منوی فعال، ۶۰ ثانیه‌ی دیگه بهش می‌ده (منو و دستور کاربر با هم)
+async function touchMenu(env, chatId, msgId) {
+  const st = await getMenuState(env);
+  if (!st || st.menu !== msgId) return;
+  await rememberMsg(env, chatId, st.menu, MENU_TTL);
+  if (st.cmd) await rememberMsg(env, chatId, st.cmd, MENU_TTL);
+}
+
+// بستن منو: خود منو و دستور کاربرش (اگه منوی فعاله) پاک می‌شن
+async function closeMenu(env, chatId, msgId) {
+  await tryDeleteMessage(env, chatId, msgId);
+  await env.DB.prepare("DELETE FROM metro_messages WHERE chat_id = ? AND message_id = ?").bind(chatId, msgId).run();
+  const st = await getMenuState(env);
+  if (st && st.menu === msgId) {
+    if (st.cmd) {
+      await tryDeleteMessage(env, chatId, st.cmd);
+      await env.DB.prepare("DELETE FROM metro_messages WHERE chat_id = ? AND message_id = ?").bind(chatId, st.cmd).run();
+    }
+    await saveMenuState(env, null);
+  }
+}
+
+// پیام کوتاه سقف: قابل‌دیدن، و بعد از ۱۵ ثانیه خودش پاک می‌شه
+async function notifyLimit(env, chatId) {
+  const sent = await tg(env, "sendMessage", { chat_id: chatId, text: LIMIT_TEXT });
+  await rememberMsg(env, chatId, sent.message_id, LIMIT_TTL);
 }
 
 // وضعیت منوی فعال گروه: شناسه‌ی منو و شناسه‌ی دستور کاربری که منو رو باز کرد
@@ -169,7 +200,10 @@ export async function handleJozveCommand(env, msg) {
     const now = nowS();
     const r = await env.DB.prepare("SELECT COUNT(*) AS n FROM jozve_usage WHERE user_id = ? AND at_utc > ?")
       .bind(uid, now - RATE_WINDOW).first();
-    if (r.n >= RATE_MAX) return tryDeleteMessage(env, chatId, msg.message_id);
+    if (r.n >= RATE_MAX) {
+      await tryDeleteMessage(env, chatId, msg.message_id);
+      return notifyLimit(env, chatId);
+    }
     await env.DB.prepare("INSERT INTO jozve_usage (user_id, at_utc) VALUES (?, ?)").bind(uid, now).run();
     await env.DB.prepare("DELETE FROM jozve_usage WHERE at_utc < ?").bind(now - 3600).run();
   }
@@ -216,16 +250,12 @@ export async function handleJozveCallback(env, cq) {
   const msgId = cq.message.message_id;
 
   if (data === "j:x") {
-    await tryDeleteMessage(env, chatId, msgId);
-    await env.DB.prepare("DELETE FROM metro_messages WHERE chat_id = ? AND message_id = ?").bind(chatId, msgId).run();
-    // اگه منوی فعال بسته شد، دستور کاربرش هم پاک می‌شه
-    const st = await getMenuState(env);
-    if (st && st.menu === msgId) {
-      if (st.cmd) await tryDeleteMessage(env, chatId, st.cmd);
-      await saveMenuState(env, null);
-    }
+    await closeMenu(env, chatId, msgId);
     return ack(env, cq);
   }
+
+  // هر کلیک روی منو (غیر از بستن) مهلت منو رو از نو شروع می‌کنه
+  await touchMenu(env, chatId, msgId);
 
   if (data === "j:b") {
     await editTemp(env, chatId, msgId, "کدوم رو می‌خوای؟", topMarkup());
@@ -283,13 +313,16 @@ export async function handleJozveCallback(env, cq) {
     ).bind(course, professor, MAX_FILES_PER_SEND * 3).all();
     if (!results.length) return ack(env, cq, "فایلی پیدا نشد");
 
-    // سقف درخواست برای کاربر عادی (با شمارش دستور /jozve)
+    // سقف مشترک برای کاربر عادی (با شمارش دستور /jozve)
     const uid = cq.from && cq.from.id;
     if (!(await isAdmin(env, uid))) {
       const now = nowS();
       const r = await env.DB.prepare("SELECT COUNT(*) AS n FROM jozve_usage WHERE user_id = ? AND at_utc > ?")
         .bind(uid, now - RATE_WINDOW).first();
-      if (r.n >= RATE_MAX) return ack(env, cq, "درخواست زیاد شد؛ چند دقیقه دیگه امتحان کن");
+      if (r.n >= RATE_MAX) {
+        await notifyLimit(env, chatId);
+        return ack(env, cq);
+      }
       await env.DB.prepare("INSERT INTO jozve_usage (user_id, at_utc) VALUES (?, ?)").bind(uid, now).run();
     }
 
@@ -297,6 +330,7 @@ export async function handleJozveCallback(env, cq) {
     const seenKeys = new Set();
     const oldFiles = [];
     let copies = 0;
+    let copyFailed = 0;
     for (const f of results.slice(0, MAX_FILES_PER_SEND * 3)) {
       const key = fileKey(course, professor, f);
       if (seenKeys.has(key)) continue;
@@ -307,14 +341,20 @@ export async function handleJozveCallback(env, cq) {
         oldFiles.push({ name: f.title || f.file_name || "فایل", id: prevId });
         continue;
       }
-      // copyMessage بدون caption: کپشن اصلی کانال حفظ می‌شه
-      const copied = await tg(env, "copyMessage", {
-        chat_id: chatId,
-        from_chat_id: env.JOZVE_CHANNEL,
-        message_id: f.channel_msg_id,
-      });
-      await saveFileRecord(env, key, copied.message_id);
-      copies += 1;
+      // خطای یک فایل، بقیه‌ی فایل‌ها رو متوقف نمی‌کنه. این فایل ثبت نمی‌شه تا دفعه‌ی بعد دوباره امتحان بشه
+      try {
+        // copyMessage بدون caption: کپشن اصلی کانال حفظ می‌شه
+        const copied = await tg(env, "copyMessage", {
+          chat_id: chatId,
+          from_chat_id: env.JOZVE_CHANNEL,
+          message_id: f.channel_msg_id,
+        });
+        await saveFileRecord(env, key, copied.message_id);
+        copies += 1;
+      } catch (err) {
+        copyFailed += 1;
+        await recordEvent(env, "jozve", "", "error", `copy ${key}: ${err && err.message ? err.message : "unknown"}`);
+      }
     }
 
     // فایل‌هایی که قبلاً فرستاده شدن: یک پیام با لینک همه‌شون (بعد از ۱۰ دقیقه پاک می‌شه)
@@ -324,7 +364,11 @@ export async function handleJozveCallback(env, cq) {
       const sent = await tg(env, "sendMessage", { chat_id: chatId, text: lines.join("\n"), disable_web_page_preview: true });
       await rememberMsg(env, chatId, sent.message_id, LINKS_TTL);
     }
-    if (!copies && !links.length) return ack(env, cq, "فایلی پیدا نشد");
+    if (!copies && !links.length) {
+      return ack(env, cq, copyFailed ? "ارسال نشد؛ دوباره امتحان کن" : "فایلی پیدا نشد");
+    }
+    // فایل فرستاده شد: منو و دستور کاربر دیگه لازم نیستن
+    await closeMenu(env, chatId, msgId);
     return ack(env, cq);
   }
 
