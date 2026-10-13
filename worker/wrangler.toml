@@ -17,3 +17,12 @@ JOZVE_CHANNEL = "-1004434418889"
 # ۲۰:۳۰ UTC = ۰۰:۰۰ تهران (پشتیبان) · ۱۶:۳۰ UTC = ۲۰:۰۰ (یادآوری فردا) · ۰۴:۳۰ UTC = ۰۸:۰۰ (یادآوری امروز) · ۰۲:۳۰ UTC = ۰۶:۰۰ (ارسال پست‌های خواب)
 # * * * * * = پاک‌کردن پیام‌های موقت /metro (هر دقیقه)
 crons = ["30 20 * * *", "30 16 * * *", "30 4 * * *", "30 2 * * *", "* * * * *"]
+
+# لاگ‌های Worker توی داشبورد Cloudflare (Observability). بدون این بلاک، هر deploy تنظیم داشبورد رو برمی‌گردونه.
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+invocation_logs = true
+persist = true
