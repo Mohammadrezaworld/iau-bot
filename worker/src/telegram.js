@@ -1,6 +1,27 @@
 // کمک‌های ارتباط با Telegram Bot API. توکن هیچ‌وقت در پیام خطا یا لاگ نوشته نمی‌شه.
 
+// رنگ دکمه‌ها (Bot API 9.4): تأیید سبز، لغو و حذف قرمز، بقیه آبی. بر اساس متن دکمه تعیین می‌شه.
+const BUTTON_STYLE = {
+  "ثبت": "success",
+  "تأیید و فعال‌سازی": "success",
+  "لغو": "danger",
+  "بستن": "danger",
+  "نه": "danger",
+  "بله، حذف": "danger",
+};
+
+export function styleMarkup(markup) {
+  if (!markup || !Array.isArray(markup.inline_keyboard)) return markup;
+  return {
+    ...markup,
+    inline_keyboard: markup.inline_keyboard.map((row) =>
+      row.map((btn) => (btn.style ? btn : { ...btn, style: BUTTON_STYLE[btn.text] || "primary" }))
+    ),
+  };
+}
+
 export async function tg(env, method, payload) {
+  if (payload && payload.reply_markup) payload = { ...payload, reply_markup: styleMarkup(payload.reply_markup) };
   const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -15,6 +36,14 @@ export async function tg(env, method, payload) {
 export async function sendMessage(env, chatId, text) {
   return tg(env, "sendMessage", { chat_id: chatId, text, disable_web_page_preview: true });
 }
+
+// فقط برای پیام‌هایی که متنشون با HTML ساخته شده و همه‌ی متن‌های ورودی escape شدن
+export async function sendHtml(env, chatId, html) {
+  return tg(env, "sendMessage", { chat_id: chatId, text: html, parse_mode: "HTML", disable_web_page_preview: true });
+}
+
+// escape برای parse_mode=HTML تلگرام
+export const escHtml = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 export async function sendJsonDocument(env, chatId, filename, obj, caption = "") {
   const form = new FormData();
