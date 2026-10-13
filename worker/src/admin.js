@@ -49,6 +49,7 @@ export async function statusText(env) {
   const runLines = runs.length
     ? runs.map((r) => `- ${r.source}/${r.channel}: ${r.ok ? "موفق" : "ناموفق"}، جدید: ${r.new_count}`)
     : ["- هنوز اسکرپی ثبت نشده"];
+  const { healthLines } = await import("./monitor.js");
   return [
     "وضعیت ربات",
     `پست‌های ذخیره‌شده: ${posts} (ارسال‌نشده: ${unsent})`,
@@ -56,6 +57,9 @@ export async function statusText(env) {
     `تعطیلات ثبت‌شده: ${holidays}`,
     `رویدادهای فعال: ${events} · شماره‌ها: ${contacts} · لینک‌ها: ${links}`,
     `کلمات کلیدی: ${keywords} · جدول مترو فعال: ${metroRows} از ۲`,
+    "زمان‌بندی اسکرپ: بله هر ۳۰ دقیقه (cron-job.org)، تلگرام هر ۲ ساعت (GitHub)، ساعت سکوت ۰۲ تا ۰۶ تهران",
+    "سلامت اسکرپ:",
+    ...(await healthLines(env)),
     "آخرین اسکرپ‌ها:",
     ...runLines,
   ].join("\n");
