@@ -69,8 +69,29 @@ async function handleIngest(request, env) {
     .bind(source, channel, ts, newCount)
     .run();
 
+  // محافظ سیل: اگه یک اسکرپ بله بیش از حد پست جدید بیاره (کارت‌های چندپستی یا پست‌های قدیمی)،
+  // این دسته به گروه نمی‌ره؛ علامت «ارسال‌شده» می‌خوره و مالک خبر می‌گیره.
+  const FLOOD_LIMIT = 5;
+  let held = false;
+  if (!firstRun && source === "bale" && newCount > FLOOD_LIMIT) {
+    held = true;
+    await env.DB.prepare(
+      "UPDATE posts SET sent_at_utc = ? WHERE source = ? AND channel = ? AND sent_at_utc IS NULL AND first_seen_utc = ?"
+    ).bind(ts, source, channel, ts).run();
+    await recordEvent(env, source, channel, "error", `flood: ${newCount} پست جدید ثبت شد ولی به گروه نرفت`);
+    try {
+      const n = new Intl.NumberFormat("fa-IR").format(newCount);
+      await tg(env, "sendMessage", {
+        chat_id: env.OWNER_ID,
+        text: `پست‌های جدید بله (${channel}): ${n} پست یک‌جا رسید. برای امنیت به گروه نرفت (احتمالاً پست قدیمی یا کارت چندپستی). اگه باید فرستاده بشه، بگو تا دستی بفرستم.`,
+      });
+    } catch (err) {
+      console.error("flood_notify", err && err.message ? err.message : "unknown");
+    }
+  }
+
   let delivered = null;
-  if (!firstRun && newCount > 0) {
+  if (!firstRun && newCount > 0 && !held) {
     try {
       delivered = await flushPosts(env, source, channel);
       if (delivered && delivered.sent) await recordEvent(env, source, channel, "delivered", String(delivered.sent));
