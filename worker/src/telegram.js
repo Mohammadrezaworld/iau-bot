@@ -7,7 +7,8 @@ export async function tg(env, method, payload) {
     body: JSON.stringify(payload),
   });
   const data = await res.json().catch(() => ({ ok: false }));
-  if (!data.ok) throw new Error(`telegram ${method} failed (${data.error_code || res.status})`);
+  // توضیح تلگرام (مثلاً chat not found) کمک می‌کنه علت خطا معلوم بشه؛ توکن هیچ‌وقت توش نیست
+  if (!data.ok) throw new Error(`telegram ${method} failed (${data.error_code || res.status}): ${String(data.description || "").slice(0, 200)}`);
   return data.result;
 }
 
