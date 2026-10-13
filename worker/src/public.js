@@ -1,5 +1,5 @@
 // دستورهای عمومی گروه: /week /next /term /left
-// پاسخ‌ها روزانه کش می‌شن؛ سؤال تکراری با ریپلای به پاسخ اصلی جواب داده می‌شه.
+// پاسخ‌ها کش می‌شن (روز + متن)؛ سؤال تکراری با ریپلای به پاسخ اصلی جواب داده می‌شه.
 import { tg } from "./telegram.js";
 import {
   tehranToday, weekIndex, parityOf, rangeText, endOfClasses, daysBetween, faDate, faNum, addDays, WEEKS,
@@ -51,12 +51,10 @@ async function sendFresh(env, chatId, text) {
   return sent.message_id;
 }
 
-export async function answerPublic(env, chatId, cmd) {
-  const startIso = await getSetting(env, "semester_start", "2026-09-12");
-  const today = tehranToday();
-  const key = `${cmd}|${today}`;
-  const text = buildAnswer(cmd, startIso, today);
-
+// کش پاسخ: کلید = نام دستور + روز + هش متن. اگه متن عوض شده باشه (مثلاً تغییر شروع ترم یا شماره‌ها)، جواب تازه می‌ره.
+// اگه سؤال تکراری باشه، ربات زیر پاسخ قبلی ریپلای می‌زنه؛ اگه پیام قبلی پاک شده باشه، جواب تازه می‌ده.
+export async function sendCachedAnswer(env, chatId, baseKey, text, send) {
+  const key = `${baseKey}|${await shortHash(text)}`;
   const cached = await env.DB.prepare("SELECT message_id FROM week_cache WHERE key = ? AND chat_id = ?")
     .bind(key, chatId).first();
 
@@ -74,9 +72,22 @@ export async function answerPublic(env, chatId, cmd) {
     }
   }
 
-  const messageId = await sendFresh(env, chatId, text);
+  const messageId = await send();
+  if (!messageId) return; // شناسه‌ی پیام نیست: کش نمی‌کنیم
   await env.DB.prepare(
     `INSERT INTO week_cache (key, chat_id, message_id, created_utc) VALUES (?, ?, ?, ?)
      ON CONFLICT(key, chat_id) DO UPDATE SET message_id = excluded.message_id, created_utc = excluded.created_utc`
   ).bind(key, chatId, messageId, nowUtc()).run();
+}
+
+async function shortHash(text) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(text)));
+  return [...new Uint8Array(buf)].slice(0, 8).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export async function answerPublic(env, chatId, cmd) {
+  const startIso = await getSetting(env, "semester_start", "2026-09-12");
+  const today = tehranToday();
+  const text = buildAnswer(cmd, startIso, today);
+  return sendCachedAnswer(env, chatId, `${cmd}|${today}`, text, () => sendFresh(env, chatId, text));
 }
