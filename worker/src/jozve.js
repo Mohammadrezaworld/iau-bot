@@ -4,6 +4,7 @@ import { tg, sendMessage, tryDeleteMessage } from "./telegram.js";
 import { isAdmin, getRole, audit } from "./admin.js";
 
 const RESULT_TTL = 300;
+const LINKS_TTL = 600; // پیام لیست لینک‌های فایل‌های قبلی بعد از ۱۰ دقیقه پاک می‌شه
 const MENU_TTL = 60; // منو و دستور کاربر بعد از ۶۰ ثانیه پاک می‌شن
 const JOZVE_MENU_KEY = "jozve_menu_msg";
 const RATE_WINDOW = 600;
@@ -316,12 +317,12 @@ export async function handleJozveCallback(env, cq) {
       copies += 1;
     }
 
-    // فایل‌هایی که قبلاً فرستاده شدن: یک پیام با لینک همه‌شون (بعد از ۵ دقیقه پاک می‌شه)
+    // فایل‌هایی که قبلاً فرستاده شدن: یک پیام با لینک همه‌شون (بعد از ۱۰ دقیقه پاک می‌شه)
     const links = oldFiles.map((o) => ({ name: o.name, url: groupMsgLink(chatId, o.id) })).filter((o) => o.url);
     if (links.length) {
       const lines = ["این فایل‌ها قبلاً ارسال شدن (روی هر کدوم بزنی می‌ره):", ...links.map((o) => `• ${o.name}\n${o.url}`)];
       const sent = await tg(env, "sendMessage", { chat_id: chatId, text: lines.join("\n"), disable_web_page_preview: true });
-      await rememberMsg(env, chatId, sent.message_id);
+      await rememberMsg(env, chatId, sent.message_id, LINKS_TTL);
     }
     if (!copies && !links.length) return ack(env, cq, "فایلی پیدا نشد");
     return ack(env, cq);
