@@ -122,6 +122,15 @@ def tehran_date(iso: str) -> str:
     return dt.astimezone(TEHRAN).date().isoformat()
 
 
+def date_from_sid(sid: str) -> str:
+    """تاریخ تهران (YYYY-MM-DD) از پسوند ms شناسه‌ی پیام (data-sid = rid-ms). خالی اگه پسوند نباشه.
+    این تاریخ خود پیام‌ه، پس به جداکننده‌ی روز (که ممکنه پیام‌های بعد از نیمه‌شب رو زیر روز قبلی بذاره) وابسته نیست."""
+    m = re.search(r"-(\d{13})$", sid or "")
+    if not m:
+        return ""
+    return datetime.fromtimestamp(int(m.group(1)) / 1000, TEHRAN).date().isoformat()
+
+
 def posts_from_v2(cards: list[dict], channel: str) -> list[dict]:
     posts = []
     seen = set()
@@ -139,7 +148,8 @@ def posts_from_v2(cards: list[dict], channel: str) -> list[dict]:
             "channel": channel,
             "post_id": sid,
             "text": text,
-            "post_date": tehran_date(card.get("date", "")),
+            # اول تاریخ خود پیام (از sid)؛ اگه نبود، تاریخ جداکننده‌ی روز
+            "post_date": date_from_sid(sid) or tehran_date(card.get("date", "")),
             "image_url": next((u for u in card.get("images", []) if u.startswith("http")), ""),
         })
     return posts
