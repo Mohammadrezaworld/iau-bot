@@ -19,7 +19,6 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: c222c6e6cea3c9a98481e1f06079fd5d
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      GH_DISPATCH_TOKEN: ${{ secrets.GH_DISPATCH_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -54,14 +53,6 @@ jobs:
 
       - name: Set bot token secret
         run: printf "%s" "$TELEGRAM_BOT_TOKEN" | npx wrangler secret put TELEGRAM_BOT_TOKEN
-
-      - name: Set GitHub dispatch secret (only if configured)
-        run: |
-          if [ -n "$GH_DISPATCH_TOKEN" ]; then
-            printf "%s" "$GH_DISPATCH_TOKEN" | npx wrangler secret put GH_DISPATCH_TOKEN
-          else
-            echo "GH_DISPATCH_TOKEN not set in GitHub secrets; skipping"
-          fi
 
       - name: Deploy worker
         run: npx wrangler deploy

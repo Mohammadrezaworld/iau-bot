@@ -49,8 +49,6 @@ export async function statusText(env) {
   const runLines = runs.length
     ? runs.map((r) => `- ${r.source}/${r.channel}: ${r.ok ? "موفق" : "ناموفق"}، جدید: ${r.new_count}`)
     : ["- هنوز اسکرپی ثبت نشده"];
-  const { lastDispatchLines } = await import("./dispatch.js");
-  const dispatchLines = await lastDispatchLines(env);
   return [
     "وضعیت ربات",
     `پست‌های ذخیره‌شده: ${posts} (ارسال‌نشده: ${unsent})`,
@@ -60,8 +58,6 @@ export async function statusText(env) {
     `کلمات کلیدی: ${keywords} · جدول مترو فعال: ${metroRows} از ۲`,
     "آخرین اسکرپ‌ها:",
     ...runLines,
-    "آخرین اجرای زمان‌بندی‌شده:",
-    ...dispatchLines,
   ].join("\n");
 }
 

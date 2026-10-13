@@ -12,7 +12,6 @@ import { isAdmin } from "./admin.js";
 import { buildBackup } from "./admin.js";
 import { sendJsonDocument, tg } from "./telegram.js";
 import { handleMetroCommand, handleMetroCallback, handleMetroUploadCallback, cleanupMetroMessages } from "./metro.js";
-import { scheduledDispatch } from "./dispatch.js";
 
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
@@ -174,11 +173,7 @@ export default {
         try {
           if (event.cron === "* * * * *") {
             // هر دقیقه: پیام‌های موقت /metro که وقتشون رسیده پاک می‌شن
-            // و در دقیقه‌های مشخص، اجرای اسکرپ بله/تلگرام (جدا از پاک‌سازی تا خطای یکی روی دیگری اثر نذاره)
-            const results = await Promise.allSettled([cleanupMetroMessages(env), scheduledDispatch(env)]);
-            for (const r of results) {
-              if (r.status === "rejected") console.error("cron_error", r.reason && r.reason.message ? r.reason.message : "unknown");
-            }
+            await cleanupMetroMessages(env);
           } else if (event.cron === "30 2 * * *") {
             // ۰۶:۰۰ تهران: پست‌های دوره‌ی خواب یک‌جا
             await flushPosts(env);
