@@ -190,33 +190,22 @@ function fileKey(course, professor, f) {
   return `${course}|${professor}|${(f.file_name || String(f.channel_msg_id)).toLowerCase()}`;
 }
 
-// فایل قبلاً فرستاده شده → زیر همون پیام ریپلای می‌شه؛ اگه پیام قبلی پاک شده باشه، دوباره کپی می‌شه
-// کپی بدون caption فرستاده می‌شه تا کپشن اصلی کانال حفظ بشه
-async function sendFileOnce(env, chatId, key, f) {
+async function fileRecord(env, key) {
   const rec = await env.DB.prepare("SELECT value FROM settings WHERE key = ?").bind(`jozve_file:${key}`).first();
-  if (rec && rec.value) {
-    try {
-      await tg(env, "sendMessage", {
-        chat_id: chatId,
-        text: "این فایل قبلاً ارسال شده ↑",
-        reply_to_message_id: Number(rec.value),
-        disable_web_page_preview: true,
-      });
-      return "replied";
-    } catch (err) {
-      if (!/not found/i.test(err && err.message ? err.message : "")) throw err;
-      // پیام قبلی پاک شده: دوباره کپی می‌کنیم
-    }
-  }
-  const copied = await tg(env, "copyMessage", {
-    chat_id: chatId,
-    from_chat_id: env.JOZVE_CHANNEL,
-    message_id: f.channel_msg_id,
-  });
+  return rec && rec.value ? Number(rec.value) : null;
+}
+
+async function saveFileRecord(env, key, msgId) {
   await env.DB.prepare(
     "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-  ).bind(`jozve_file:${key}`, String(copied.message_id)).run();
-  return "copied";
+  ).bind(`jozve_file:${key}`, String(msgId)).run();
+}
+
+// لینک پیام توی گروه سوپرگروه (فقط برای اعضای گروه باز میشه)
+function groupMsgLink(chatId, msgId) {
+  const s = String(chatId);
+  if (!s.startsWith("-100")) return null;
+  return `https://t.me/c/${s.slice(4)}/${msgId}`;
 }
 
 // دکمه‌های گروه: j:n / j:e (دسته) · j:c:<درس> / j:ec:<درس> · j:f:<درس>|<استاد> / j:ef:<درس>|<استاد> · j:b · j:x
@@ -305,13 +294,36 @@ export async function handleJozveCallback(env, cq) {
 
     // فایل‌های هم‌نام (درس+استاد+نام) در یک درخواست فقط یک بار
     const seenKeys = new Set();
+    const oldFiles = [];
+    let copies = 0;
     for (const f of results.slice(0, MAX_FILES_PER_SEND * 3)) {
       const key = fileKey(course, professor, f);
       if (seenKeys.has(key)) continue;
       seenKeys.add(key);
       if (seenKeys.size > MAX_FILES_PER_SEND) break;
-      await sendFileOnce(env, chatId, key, f);
+      const prevId = await fileRecord(env, key);
+      if (prevId) {
+        oldFiles.push({ name: f.title || f.file_name || "فایل", id: prevId });
+        continue;
+      }
+      // copyMessage بدون caption: کپشن اصلی کانال حفظ می‌شه
+      const copied = await tg(env, "copyMessage", {
+        chat_id: chatId,
+        from_chat_id: env.JOZVE_CHANNEL,
+        message_id: f.channel_msg_id,
+      });
+      await saveFileRecord(env, key, copied.message_id);
+      copies += 1;
     }
+
+    // فایل‌هایی که قبلاً فرستاده شدن: یک پیام با لینک همه‌شون (بعد از ۵ دقیقه پاک می‌شه)
+    const links = oldFiles.map((o) => ({ name: o.name, url: groupMsgLink(chatId, o.id) })).filter((o) => o.url);
+    if (links.length) {
+      const lines = ["این فایل‌ها قبلاً ارسال شدن (روی هر کدوم بزنی می‌ره):", ...links.map((o) => `• ${o.name}\n${o.url}`)];
+      const sent = await tg(env, "sendMessage", { chat_id: chatId, text: lines.join("\n"), disable_web_page_preview: true });
+      await rememberMsg(env, chatId, sent.message_id);
+    }
+    if (!copies && !links.length) return ack(env, cq, "فایلی پیدا نشد");
     return ack(env, cq);
   }
 
