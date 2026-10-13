@@ -2,7 +2,7 @@
 // این ماژول هیچ‌وقت به گروه یا کانال پیام نمی‌فرسته؛ فقط DM مالک.
 import { sendMessage } from "./telegram.js";
 import { getSetting } from "./public.js";
-import { inTehranQuietHours, isJunkPost } from "./channels.js";
+import { inTehranQuietHours } from "./channels.js";
 import { faNum } from "./calendar.js";
 
 const MIN_MS = 60 * 1000;
@@ -229,46 +229,6 @@ export async function sendDailySummary(env, now = Date.now()) {
   await setSetting(env, "summary_sent_on", p.date);
   await env.DB.prepare("DELETE FROM scrape_events WHERE at_utc < ?")
     .bind(Math.floor(now / 1000) - RETENTION_S).run();
-}
-
-// [موقت] /scrape_test: ۱۰ پست آخر هر کانال با زمان دیده‌شدن، فقط خواندنی؛ هیچ پستی علامت نمی‌خوره
-export async function scrapeTestLines(env) {
-  const lines = ["تست اسکرپ (فقط خواندنی): ۱۰ پست آخر هر کانال"];
-  const { results: channels } = await env.DB.prepare(
-    "SELECT DISTINCT source, channel FROM posts ORDER BY source, channel"
-  ).all();
-  if (!channels.length) return ["هنوز پستی ذخیره نشده."];
-  for (const ch of channels) {
-    const { results } = await env.DB.prepare(
-      "SELECT text, first_seen_utc, sent_at_utc FROM posts WHERE source = ? AND channel = ? ORDER BY id DESC LIMIT 10"
-    ).bind(ch.source, ch.channel).all();
-    lines.push("", `── ${LABEL[ch.source] || ch.source} / ${ch.channel} (${results.length} پست)`);
-    for (const p of results) {
-      const state = p.sent_at_utc ? "ارسال‌شده" : "در صف";
-      const body = String(p.text || "").replace(/\s+/g, " ").trim().slice(0, 200) || "(بدون متن)";
-      lines.push(`• ${fmtTehran(p.first_seen_utc * 1000)} · ${state}`, body);
-    }
-  }
-  return lines;
-}
-
-// [موقت] /queue_clear: پست‌های بله در صف رو علامت ارسال‌شده می‌زنه.
-// بدون آرگومان: فقط آشغال (فقط عدد و ساعت). با «all»: کل صف بله.
-export async function queueClearText(env, arg = "") {
-  const all = String(arg).trim() === "all";
-  const { results } = await env.DB.prepare(
-    "SELECT id, text FROM posts WHERE source = 'bale' AND sent_at_utc IS NULL"
-  ).all();
-  if (!results.length) return "صف بله خالیه.";
-  const targets = all ? results : results.filter((r) => isJunkPost(r.text));
-  const now = nowUtc();
-  for (const r of targets) {
-    await env.DB.prepare("UPDATE posts SET sent_at_utc = ? WHERE id = ?").bind(now, r.id).run();
-  }
-  const left = results.length - targets.length;
-  return all
-    ? `کل صف بله (${faNum(targets.length)} پست) علامت ارسال‌شده خورد.`
-    : `${faNum(targets.length)} پست آشغال از صف بله حذف شد. باقی‌مانده در صف: ${faNum(left)}`;
 }
 
 // /scrape_log: ۲۰ رویداد آخر
