@@ -1,5 +1,5 @@
 // ارسال پست‌های جدید کانال‌ها به گروه. پیام‌ها متن ساده‌ان (بدون parse_mode) تا محتوای کانال نتونه قالب‌بندی تلگرام رو بشکنه.
-import { tg, sendMessage } from "./telegram.js";
+import { tg, sendMessage, sendHtml, escHtml } from "./telegram.js";
 import { getSetting } from "./public.js";
 import { audit } from "./admin.js";
 import { normalizeDigits } from "./jalali.js";
@@ -69,15 +69,16 @@ export async function keywordsList(env) {
   try { return JSON.parse(raw); } catch { return DEFAULT_KEYWORDS; }
 }
 
-// خروجی: آرایه‌ای از بخش‌ها، هر بخش آرایه‌ای از خط‌ها (تا خط‌ها جدا بمونن و اگه لازم شد جدا فرستاده بشن)
-function chunkMessages(lines) {
+// ورودی: آرایه‌ی بلوک‌ها ({html, plain}). خروجی: آرایه‌ای از بخش‌ها، هر بخش آرایه‌ای از بلوک‌ها
+// (تا بلوک‌ها جدا بمونن و اگه لازم شد جدا فرستاده بشن)
+function chunkMessages(blocks) {
   const chunks = [];
   let cur = [];
   let len = 0;
-  for (const line of lines) {
-    const add = line.length + (cur.length ? 1 : 0);
-    if (len + add > MAX_CHUNK && cur.length) { chunks.push(cur); cur = [line]; len = line.length; }
-    else { cur.push(line); len += add; }
+  for (const b of blocks) {
+    const add = b.html.length + (cur.length ? 1 : 0);
+    if (len + add > MAX_CHUNK && cur.length) { chunks.push(cur); cur = [b]; len = b.html.length; }
+    else { cur.push(b); len += add; }
   }
   if (cur.length) chunks.push(cur);
   return chunks;
@@ -90,17 +91,23 @@ const MAX_LINE = 4000;
 // بخش را یک‌جا می‌فرسته. اگه تلگرام به‌خاطر محتوا رد کرد، خط‌ها یکی‌یکی و کوتاه‌شده فرستاده می‌شن
 // تا یک پست خراب کل صف رو متوقف نکنه. خطاهای گروه/دسترسی (مثل chat not found) دوباره پرتاب می‌شن
 // تا پست‌ها در صف بمونن و چیزی علامت ارسال نخوره.
-async function sendLinesSafely(env, groupId, lines, label) {
+// اول با HTML (کوت‌ها)؛ اگه بلوکی رد شد، همون بلوک با متن ساده فرستاده می‌شه تا تگ خام دیده نشه.
+async function sendBlocksSafely(env, groupId, blocks, label) {
   try {
-    await tg(env, "sendMessage", { chat_id: groupId, text: lines.join("\n"), disable_web_page_preview: true });
+    await sendHtml(env, groupId, blocks.map((b) => b.html).join("\n"));
     return;
   } catch (err) {
     if (!CONTENT_ERROR.test(err.message || "")) throw err;
   }
-  for (const line of lines) {
-    const text = line.length > MAX_LINE ? line.slice(0, MAX_LINE) + "…" : line;
+  for (const b of blocks) {
     try {
-      await tg(env, "sendMessage", { chat_id: groupId, text, disable_web_page_preview: true });
+      await sendHtml(env, groupId, b.html);
+      continue;
+    } catch (err) {
+      if (!CONTENT_ERROR.test(err.message || "")) throw err;
+    }
+    try {
+      await tg(env, "sendMessage", { chat_id: groupId, text: b.plain, disable_web_page_preview: true });
     } catch (err) {
       if (!CONTENT_ERROR.test(err.message || "")) throw err;
       await recordEvent(env, "system", "", "error", `send: ${label} — ${err.message}`);
@@ -150,14 +157,21 @@ export async function flushPosts(env, source = null, channel = null) {
     const normal = posts.filter((p) => !isImportant(p.text, keywords));
     const ordered = [...important, ...normal];
 
-    const lines = [`📰 ${label}`];
+    // عنوان کانال بولد؛ هر پست داخل کوت (blockquote) بدون جمع‌شدن. پست مهم بولد می‌شه. بدون ایموجی.
+    const blocks = [{ html: `<b>${escHtml(label)}</b>`, plain: label }];
     for (const p of ordered) {
-      const body = (p.text || "").trim() || "(بدون متن)";
-      lines.push(`${important.includes(p) ? "📢 " : "• "}${body}`);
+      const body0 = (p.text || "").trim() || "(بدون متن)";
+      const body = body0.length > MAX_LINE ? body0.slice(0, MAX_LINE) + "…" : body0;
+      const isImp = important.includes(p);
+      const inner = escHtml(body);
+      blocks.push({
+        html: `<blockquote>${isImp ? `<b>${inner}</b>` : inner}</blockquote>`,
+        plain: `${isImp ? "" : "• "}${body}`,
+      });
     }
-    const chunks = chunkMessages(lines);
+    const chunks = chunkMessages(blocks);
     for (const chunk of chunks) {
-      await sendLinesSafely(env, groupId, chunk, label);
+      await sendBlocksSafely(env, groupId, chunk, label);
     }
 
     // عکس‌ها: آلبوم با حداکثر ۱۰ عکس. اگه تلگرام نتونست بگیره، متن پیام همچنان رفته.
