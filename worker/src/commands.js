@@ -15,7 +15,7 @@ import { undoLast } from "./undo.js";
 import { setQuietCommand } from "./channels.js";
 import { editList } from "./wizard.js";
 import { jozveListText, jozveRemoveList, jozveCategoryCommand } from "./jozve.js";
-import { scrapeLogText } from "./monitor.js";
+import { scrapeLogText, scrapeTestLines } from "./monitor.js";
 
 // دستورهایی که سطح content هم مجازه
 const CONTENT_CMDS = new Set([
@@ -130,6 +130,24 @@ export async function handleAdminMessage(env, message) {
       return sendMessage(env, chatId, await statusText(env));
     case "/scrape_log":
       return sendMessage(env, chatId, await scrapeLogText(env));
+    case "/scrape_test": {
+      // [موقت] فقط مالک؛ خروجی در چند پیام کوتاه، بدون تغییر دیتابیس
+      if (!(await isOwner(env, userId))) return;
+      const lines = await scrapeTestLines(env);
+      let chunk = [];
+      let size = 0;
+      for (const line of lines) {
+        if (size + line.length > 3500 && chunk.length) {
+          await sendMessage(env, chatId, chunk.join("\n"));
+          chunk = [];
+          size = 0;
+        }
+        chunk.push(line);
+        size += line.length + 1;
+      }
+      if (chunk.length) await sendMessage(env, chatId, chunk.join("\n"));
+      return;
+    }
     case "/jozve_list":
       return sendMessage(env, chatId, await jozveListText(env));
     case "/jozve_remove":

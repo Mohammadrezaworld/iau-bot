@@ -231,6 +231,27 @@ export async function sendDailySummary(env, now = Date.now()) {
     .bind(Math.floor(now / 1000) - RETENTION_S).run();
 }
 
+// [موقت] /scrape_test: ۱۰ پست آخر هر کانال با زمان دیده‌شدن، فقط خواندنی؛ هیچ پستی علامت نمی‌خوره
+export async function scrapeTestLines(env) {
+  const lines = ["تست اسکرپ (فقط خواندنی): ۱۰ پست آخر هر کانال"];
+  const { results: channels } = await env.DB.prepare(
+    "SELECT DISTINCT source, channel FROM posts ORDER BY source, channel"
+  ).all();
+  if (!channels.length) return ["هنوز پستی ذخیره نشده."];
+  for (const ch of channels) {
+    const { results } = await env.DB.prepare(
+      "SELECT text, first_seen_utc, sent_at_utc FROM posts WHERE source = ? AND channel = ? ORDER BY id DESC LIMIT 10"
+    ).bind(ch.source, ch.channel).all();
+    lines.push("", `── ${LABEL[ch.source] || ch.source} / ${ch.channel} (${results.length} پست)`);
+    for (const p of results) {
+      const state = p.sent_at_utc ? "ارسال‌شده" : "در صف";
+      const body = String(p.text || "").replace(/\s+/g, " ").trim().slice(0, 200) || "(بدون متن)";
+      lines.push(`• ${fmtTehran(p.first_seen_utc * 1000)} · ${state}`, body);
+    }
+  }
+  return lines;
+}
+
 // /scrape_log: ۲۰ رویداد آخر
 export async function scrapeLogText(env) {
   const { results } = await env.DB.prepare(
