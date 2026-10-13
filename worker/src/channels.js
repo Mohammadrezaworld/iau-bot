@@ -25,6 +25,16 @@ export function normalizeForMatch(s) {
     .replace(/ك/g, "ک");
 }
 
+// همان منطق scrape_bale.py: فوتر (بازدید و ساعت) حذف می‌شه تا تکراری شناخته بشه
+const FOOTER_JS = /(?:\s+[0-9\u06F0-\u06F9]+)+\s+[0-9\u06F0-\u06F9]{1,2}:[0-9\u06F0-\u06F9]{2}\s*$/;
+export function cleanPostText(raw) {
+  return String(raw || "").replace(/\s+/g, " ").trim().replace(FOOTER_JS, "").trim();
+}
+// پستی که بعد از حذف فوتر کمتر از ۳ حرف داره (فقط عدد و ساعت)
+export function isJunkPost(text) {
+  return (cleanPostText(text).match(/\p{L}/gu) || []).length < 3;
+}
+
 export function isImportant(text, keywords) {
   const t = normalizeForMatch(text);
   return keywords.some((k) => t.includes(normalizeForMatch(k)));
