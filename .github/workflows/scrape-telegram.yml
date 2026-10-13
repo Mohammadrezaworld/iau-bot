@@ -1,8 +1,12 @@
 name: scrape-telegram
 
 on:
-  # زمان‌بندی از Worker انجام می‌شه (کرون Cloudflare، با رعایت ساعت سکوت)؛
-  # زمان‌بند GitHub نامنظم بود، پس اینجا فقط اجرای دستی/فراخوانی Worker مونده.
+  schedule:
+    # ساعت سکوت ۰۲ تا ۰۶ تهران (۲۲:۳۰ تا ۰۲:۳۰ UTC) اجرا نمی‌شه
+    - cron: "*/20 3-21 * * *"
+    - cron: "0 22 * * *"
+    - cron: "20 22 * * *"
+    - cron: "40 2 * * *"
   workflow_dispatch:
 
 jobs:
