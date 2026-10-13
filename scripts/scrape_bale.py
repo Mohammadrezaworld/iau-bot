@@ -11,7 +11,7 @@ import sys
 from playwright.sync_api import sync_playwright
 
 from quiet import in_quiet_hours
-from send_to_worker import send_posts
+from send_to_worker import report_error, send_posts
 
 CHANNELS = ["iaut_fani", "iautcom"]
 TIME_RE = re.compile(r"\d{1,2}:\d{2}")
@@ -86,6 +86,13 @@ def main() -> int:
                 posts = fetch_channel(page, ch)
             except Exception as exc:  # noqa: BLE001
                 print(f"ERROR fetch channel={ch} type={type(exc).__name__}", file=sys.stderr)
+                report_error("bale", ch, "fetch", f"{type(exc).__name__}: {exc}")
+                failed += 1
+                continue
+            if not posts:
+                # صفحه باز شده ولی هیچ پستی پیدا نشده: احتمالاً ساختار صفحه عوض شده
+                print(f"ERROR parse channel={ch} no posts", file=sys.stderr)
+                report_error("bale", ch, "parse", "هیچ پستی در صفحه پیدا نشد")
                 failed += 1
                 continue
             try:
@@ -93,10 +100,16 @@ def main() -> int:
                 print(f"channel={ch} fetched={len(posts)} result={result}")
             except Exception as exc:  # noqa: BLE001
                 print(f"ERROR send channel={ch} type={type(exc).__name__}", file=sys.stderr)
+                report_error("bale", ch, "send", f"{type(exc).__name__}: {exc}")
                 failed += 1
         browser.close()
     return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as exc:  # noqa: BLE001
+        # خطای راه‌اندازی (مثلاً مرورگر): گزارش بشه و اجرا همچنان قرمز بمونه
+        report_error("bale", "", "startup", f"{type(exc).__name__}: {exc}")
+        raise
