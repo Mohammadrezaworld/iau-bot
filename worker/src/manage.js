@@ -176,11 +176,12 @@ export async function publicContacts(env) {
   const out = [];
   for (const [cat, items] of Object.entries(groups)) {
     out.push(`<b>【${escHtml(cat)}】</b>`);
-    for (const c of items) {
+    // هر دسته داخل یک blockquote جمع‌شونده: پیش‌فرض بسته، با باز کردن همه‌ی شماره‌ها دیده می‌شن
+    const rows = items.map((c) => {
       const label = `${escHtml(c.name)}${c.note ? " (" + escHtml(c.note) + ")" : ""}`;
-      out.push(`<blockquote>${label}</blockquote>`, `<code>${escHtml(c.number)}</code>`);
-    }
-    out.push("");
+      return `${label}\n<code>${escHtml(c.number)}</code>`;
+    });
+    out.push(`<blockquote expandable>${rows.join("\n\n")}</blockquote>`, "");
   }
   out.push("جستجوی شماره‌ی کارکنان: /links");
   return out.join("\n");
