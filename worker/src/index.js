@@ -2,6 +2,7 @@
 import { webhookSecret, tryDeleteMessage } from "./telegram.js";
 import { handleAdminMessage, parseCmd, PUBLIC_CMDS, runPublic } from "./commands.js";
 import { getSetting } from "./public.js";
+import { tehranToday } from "./calendar.js";
 import { sendReminders } from "./reminders.js";
 import { handleCallback } from "./wizard.js";
 import { handleKeywordCallback } from "./keywords.js";
@@ -22,6 +23,15 @@ const json = (obj, status = 200) =>
 
 const nowUtc = () => Math.floor(Date.now() / 1000);
 
+const FLOOD_LIMIT = 5;
+
+// مشخص می‌کنه پست بله جدیده (برای ارسال) یا قدیمی/بی‌تاریخ (فقط ثبت می‌شه)
+function baleCategory(p, today) {
+  if (!p.post_date) return "unknown";
+  if (p.post_date < today) return "old";
+  return "send";
+}
+
 async function handleIngest(request, env) {
   // فقط GitHub Actions با رمز مشترک می‌تونه پست بفرسته
   if (request.headers.get("x-ingest-secret") !== env.INGEST_SECRET) {
@@ -38,28 +48,44 @@ async function handleIngest(request, env) {
   }
 
   let newCount = 0;
+  let sendCount = 0;
   const ts = nowUtc();
+  const today = tehranToday();
   // اولین اجرای این کانال: پست‌های موجود فقط علامت می‌خورن و چیزی فرستاده نمی‌شه
   const prev = await env.DB.prepare("SELECT COUNT(*) AS n FROM scrape_runs WHERE source = ? AND channel = ?")
     .bind(source, channel).first();
   const firstRun = !prev || prev.n === 0;
+  // حالت آزمایشی بله (پیش‌فرض روشن): هیچ پستی به گروه نمی‌ره، فقط گزارش به مالک
+  const dryRun = source === "bale" && (await getSetting(env, "bale_dry_run", "1")) === "1";
   // متن‌های قبلی این کانال (بدون فوتر) تا پست تکراری با شماره‌ی بازدید متفاوت دوباره ارسال نشه
   const { results: known } = await env.DB.prepare(
     "SELECT text FROM posts WHERE source = ? AND channel = ? ORDER BY id DESC LIMIT 400"
   ).bind(source, channel).all();
   const seenText = new Set(known.map((r) => cleanPostText(r.text)).filter(Boolean));
+  const report = { send: [], old: 0, unknown: 0 };
+
   for (const p of posts) {
     const key = cleanPostText(p.text);
     if (key && seenText.has(key)) continue;
     if (key) seenText.add(key);
+    const category = source === "bale" ? baleCategory(p, today) : "send";
+    // قدیمی، بی‌تاریخ، حالت آزمایشی و اولین اجرا: فقط ثبت می‌شن و ارسال نمی‌شن
+    const markSent = firstRun || category !== "send" || dryRun;
     const res = await env.DB.prepare(
       `INSERT OR IGNORE INTO posts
          (source, channel, post_id, text, image_url, first_seen_utc, sent_at_utc)
        VALUES (?, ?, ?, ?, ?, ?, ?)`
     )
-      .bind(source, channel, String(p.post_id), String(p.text || ""), String(p.image_url || ""), ts, firstRun ? ts : null)
+      .bind(source, channel, String(p.post_id), String(p.text || ""), String(p.image_url || ""), ts, markSent ? ts : null)
       .run();
-    if (res.meta && res.meta.changes > 0) newCount += 1;
+    if (res.meta && res.meta.changes > 0) {
+      newCount += 1;
+      if (category === "send") {
+        sendCount += 1;
+        if (report.send.length < 5) report.send.push(String(p.text || "").slice(0, 120));
+      } else if (category === "old") report.old += 1;
+      else report.unknown += 1;
+    }
   }
 
   await env.DB.prepare(
@@ -69,29 +95,29 @@ async function handleIngest(request, env) {
     .bind(source, channel, ts, newCount)
     .run();
 
-  // محافظ سیل: اگه یک اسکرپ بله بیش از حد پست جدید بیاره (کارت‌های چندپستی یا پست‌های قدیمی)،
-  // این دسته به گروه نمی‌ره؛ علامت «ارسال‌شده» می‌خوره و مالک خبر می‌گیره.
-  const FLOOD_LIMIT = 5;
-  let held = false;
-  if (!firstRun && source === "bale" && newCount > FLOOD_LIMIT) {
-    held = true;
+  // محافظ سیل: اگه یک اسکرپ بیش از حد پست قابل ارسال از بله بیاره، به گروه نمی‌ره
+  const held = source === "bale" && !firstRun && !dryRun && sendCount > FLOOD_LIMIT;
+  if (held) {
     await env.DB.prepare(
       "UPDATE posts SET sent_at_utc = ? WHERE source = ? AND channel = ? AND sent_at_utc IS NULL AND first_seen_utc = ?"
     ).bind(ts, source, channel, ts).run();
-    await recordEvent(env, source, channel, "error", `flood: ${newCount} پست جدید ثبت شد ولی به گروه نرفت`);
-    try {
-      const n = new Intl.NumberFormat("fa-IR").format(newCount);
-      await tg(env, "sendMessage", {
-        chat_id: env.OWNER_ID,
-        text: `پست‌های جدید بله (${channel}): ${n} پست یک‌جا رسید. برای امنیت به گروه نرفت (احتمالاً پست قدیمی یا کارت چندپستی). اگه باید فرستاده بشه، بگو تا دستی بفرستم.`,
-      });
-    } catch (err) {
-      console.error("flood_notify", err && err.message ? err.message : "unknown");
-    }
+    await recordEvent(env, source, channel, "error", `flood: ${sendCount} پست جدید ثبت شد ولی به گروه نرفت`);
+    await notifyOwner(env, `پست‌های جدید بله (${channel}): ${sendCount} پست یک‌جا رسید. برای امنیت به گروه نرفت. اگه باید فرستاده بشه، بگو تا دستی بفرستم.`);
+  }
+
+  // گزارش حالت آزمایشی: هر بار که پست جدیدی باشه، برای مالک خلاصه‌ی تصمیم‌ها
+  if (source === "bale" && !firstRun && dryRun && newCount > 0) {
+    const lines = [
+      `حالت آزمایشی بله (${channel}): ${newCount} پست جدید.`,
+      `ارسال می‌شد: ${sendCount} · قدیمی: ${report.old} · بدون تاریخ: ${report.unknown}`,
+      ...report.send.map((t) => `• ${t}`),
+      "این فقط گزارش بود و به گروه چیزی نرفت. با /bale_mode live واقعی می‌شه.",
+    ];
+    await notifyOwner(env, lines.join("\n"));
   }
 
   let delivered = null;
-  if (!firstRun && newCount > 0 && !held) {
+  if (!firstRun && !dryRun && !held && sendCount > 0) {
     try {
       delivered = await flushPosts(env, source, channel);
       if (delivered && delivered.sent) await recordEvent(env, source, channel, "delivered", String(delivered.sent));
@@ -99,7 +125,15 @@ async function handleIngest(request, env) {
       await reportError(env, source, channel, "flush", err && err.message ? err.message : "unknown");
     }
   }
-  return json({ ok: true, received: posts.length, new: newCount, delivered });
+  return json({ ok: true, received: posts.length, new: newCount, send: sendCount, dry_run: dryRun, held, delivered });
+}
+
+async function notifyOwner(env, text) {
+  try {
+    await tg(env, "sendMessage", { chat_id: env.OWNER_ID, text, disable_web_page_preview: true });
+  } catch (err) {
+    console.error("owner_notify", err && err.message ? err.message : "unknown");
+  }
 }
 
 async function isOurGroup(env, chatId) {

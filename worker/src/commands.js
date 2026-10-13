@@ -56,6 +56,7 @@ const HELP = [
   "/status — وضعیت ربات",
   "/log — ۲۰ تغییر آخر",
   "/scrape_log — ۲۰ رویداد آخر اسکرپ (خطا، توقف و برگشت، ارسال به گروه)",
+  "/bale_mode dry|live — حالت اسکرپ بله: آزمایشی (فقط گزارش) یا واقعی (ارسال)",
   "/backup — فایل پشتیبان",
   "/set_semester ۱۴۰۵-۰۶-۲۱ — شروع ترم (شنبه، شمسی)",
   "/set_group -100… — شناسه‌ی گروه",
@@ -135,6 +136,16 @@ export async function handleAdminMessage(env, message) {
       return sendMessage(env, chatId, HELP);
     case "/status":
       return sendMessage(env, chatId, await statusText(env));
+    case "/bale_mode": {
+      // فقط مالک: حالت اسکرپ بله؛ dry = آزمایشی (فقط گزارش)، live = واقعی (ارسال به گروه)
+      if (!(await isOwner(env, userId))) return;
+      const mode = String(arg || "").trim().toLowerCase();
+      if (mode !== "dry" && mode !== "live") return sendMessage(env, chatId, "فرمت: /bale_mode dry یا /bale_mode live");
+      await env.DB.prepare(
+        "INSERT INTO settings (key, value) VALUES ('bale_dry_run', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+      ).bind(mode === "dry" ? "1" : "0").run();
+      return sendMessage(env, chatId, mode === "dry" ? "بله: حالت آزمایشی (فقط گزارش به مالک)" : "بله: حالت واقعی (ارسال به گروه)");
+    }
     case "/scrape_log":
       return sendMessage(env, chatId, await scrapeLogText(env));
     case "/jozve_list":
