@@ -92,7 +92,7 @@ export async function recordEvent(env, source, channel, kind, detail = "") {
   }
 }
 
-// گزارش خطا: ثبت در scrape_events و در صورت گذشت ۶۰ دقیقه از هشدار قبلی، DM به مالک.
+// گزارش خطا: ثبت در scrape_events و در صورت گذشت ۶۰ دقیقه از هشدار قبلی همین منبع+کانال، DM به مالک.
 // هیچ‌وقت exception نمی‌ندازه. برمی‌گردونه true اگه هشدار فرستاده شد.
 export async function reportError(env, source, channel, stage, message) {
   try {
@@ -101,10 +101,12 @@ export async function reportError(env, source, channel, stage, message) {
     const text = redact(env, message);
     await recordEvent(env, src, channel, "error", `${stg}: ${text}`);
 
+    // محدودیت هشدار برای هر منبع+کانال جداست تا خطای یک کانال، خطای کانال دیگه رو پنهان نکنه
+    const alertKey = `alert_at:${src}:${channel || "-"}`;
     const nowS = nowUtc();
-    const last = Number(await getSetting(env, `alert_at_${src}`, "0")) || 0;
+    const last = Number(await getSetting(env, alertKey, "0")) || 0;
     if (nowS - last < ALERT_GAP_S) return false;
-    await setSetting(env, `alert_at_${src}`, nowS);
+    await setSetting(env, alertKey, nowS);
     const where = channel ? ` · ${channel}` : "";
     await alertOwner(env, `❌ خطا در اسکرپ ${LABEL[src]}${where}\nمرحله: ${stg}\n${text}`);
     return true;
