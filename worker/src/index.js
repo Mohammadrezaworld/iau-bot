@@ -7,7 +7,7 @@ import { handleCallback } from "./wizard.js";
 import { handleKeywordCallback } from "./keywords.js";
 import { handleHolidayCallback } from "./holidays.js";
 import { handleJozvePost, handleJozveCommand, handleJozveCallback, handleJozveRemoveCallback } from "./jozve.js";
-import { flushPosts } from "./channels.js";
+import { flushPosts, cleanPostText } from "./channels.js";
 import { isAdmin } from "./admin.js";
 import { buildBackup } from "./admin.js";
 import { sendJsonDocument, tg } from "./telegram.js";
@@ -43,7 +43,15 @@ async function handleIngest(request, env) {
   const prev = await env.DB.prepare("SELECT COUNT(*) AS n FROM scrape_runs WHERE source = ? AND channel = ?")
     .bind(source, channel).first();
   const firstRun = !prev || prev.n === 0;
+  // متن‌های قبلی این کانال (بدون فوتر) تا پست تکراری با شماره‌ی بازدید متفاوت دوباره ارسال نشه
+  const { results: known } = await env.DB.prepare(
+    "SELECT text FROM posts WHERE source = ? AND channel = ? ORDER BY id DESC LIMIT 400"
+  ).bind(source, channel).all();
+  const seenText = new Set(known.map((r) => cleanPostText(r.text)).filter(Boolean));
   for (const p of posts) {
+    const key = cleanPostText(p.text);
+    if (key && seenText.has(key)) continue;
+    if (key) seenText.add(key);
     const res = await env.DB.prepare(
       `INSERT OR IGNORE INTO posts
          (source, channel, post_id, text, image_url, first_seen_utc, sent_at_utc)
