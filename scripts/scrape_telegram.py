@@ -10,7 +10,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from quiet import in_quiet_hours
-from send_to_worker import send_posts
+from send_to_worker import report_error, send_posts
 
 CHANNELS = ["fanniBultan"]
 HEADERS = {
@@ -59,6 +59,13 @@ def main() -> int:
             posts = fetch_channel(ch)
         except Exception as exc:  # noqa: BLE001
             print(f"ERROR fetch channel={ch} type={type(exc).__name__}", file=sys.stderr)
+            report_error("telegram", ch, "fetch", f"{type(exc).__name__}: {exc}")
+            failed += 1
+            continue
+        if not posts:
+            # صفحه‌ی عمومی همیشه پست‌های اخیر رو داره؛ نبودنشون یعنی ساختار صفحه عوض شده
+            print(f"ERROR parse channel={ch} no posts", file=sys.stderr)
+            report_error("telegram", ch, "parse", "هیچ پستی در صفحه پیدا نشد")
             failed += 1
             continue
         try:
@@ -66,9 +73,14 @@ def main() -> int:
             print(f"channel={ch} fetched={len(posts)} result={result}")
         except Exception as exc:  # noqa: BLE001
             print(f"ERROR send channel={ch} type={type(exc).__name__}", file=sys.stderr)
+            report_error("telegram", ch, "send", f"{type(exc).__name__}: {exc}")
             failed += 1
     return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as exc:  # noqa: BLE001
+        report_error("telegram", "", "startup", f"{type(exc).__name__}: {exc}")
+        raise

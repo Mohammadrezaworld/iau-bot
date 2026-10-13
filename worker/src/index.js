@@ -12,6 +12,7 @@ import { isAdmin } from "./admin.js";
 import { buildBackup } from "./admin.js";
 import { sendJsonDocument, tg } from "./telegram.js";
 import { handleMetroCommand, handleMetroCallback, handleMetroUploadCallback, cleanupMetroMessages } from "./metro.js";
+import { handleScrapeReport, recordEvent, reportError, checkScrapeHealth, sendDailySummary, redact } from "./monitor.js";
 
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
@@ -64,8 +65,9 @@ async function handleIngest(request, env) {
   if (!firstRun && newCount > 0) {
     try {
       delivered = await flushPosts(env, source, channel);
+      if (delivered && delivered.sent) await recordEvent(env, source, channel, "delivered", String(delivered.sent));
     } catch (err) {
-      console.error("flush_error", err && err.message ? err.message : "unknown");
+      await reportError(env, source, channel, "flush", err && err.message ? err.message : "unknown");
     }
   }
   return json({ ok: true, received: posts.length, new: newCount, delivered });
@@ -163,6 +165,9 @@ export default {
     if (request.method === "POST" && url.pathname === "/tg-webhook") {
       return handleTelegramWebhook(request, env);
     }
+    if (request.method === "POST" && url.pathname === "/scrape-report") {
+      return handleScrapeReport(request, env);
+    }
     return json({ ok: false, error: "not_found" }, 404);
   },
 
@@ -172,11 +177,20 @@ export default {
       (async () => {
         try {
           if (event.cron === "* * * * *") {
-            // هر دقیقه: پیام‌های موقت /metro که وقتشون رسیده پاک می‌شن
-            await cleanupMetroMessages(env);
+            // هر دقیقه: پاک‌کردن پیام‌های موقت /metro، بررسی سلامت اسکرپ‌ها و گزارش روزانه.
+            // هرکدوم جدا اجرا می‌شه تا خطای یکی، بقیه رو نبره.
+            const tasks = { metro: cleanupMetroMessages, health: checkScrapeHealth, summary: sendDailySummary };
+            const names = Object.keys(tasks);
+            const results = await Promise.allSettled(names.map((name) => tasks[name](env)));
+            results.forEach((r, i) => {
+              if (r.status === "rejected") {
+                console.error("minute_task_error", names[i], redact(env, r.reason && r.reason.message ? r.reason.message : "unknown"));
+              }
+            });
           } else if (event.cron === "30 2 * * *") {
             // ۰۶:۰۰ تهران: پست‌های دوره‌ی خواب یک‌جا
-            await flushPosts(env);
+            const r = await flushPosts(env);
+            if (r && r.sent) await recordEvent(env, "system", "", "delivered", String(r.sent));
           } else if (event.cron === "30 20 * * *") {
             const backup = await buildBackup(env);
             await sendJsonDocument(env, env.OWNER_ID, "iaut-backup.json", backup, "پشتیبان روزانه");
@@ -184,7 +198,9 @@ export default {
             await sendReminders(env, event.cron);
           }
         } catch (err) {
-          console.error("cron_error", err && err.message ? err.message : "unknown");
+          const msg = err && err.message ? err.message : "unknown";
+          console.error("cron_error", redact(env, msg));
+          await reportError(env, "system", "", "cron", msg);
         }
       })()
     );

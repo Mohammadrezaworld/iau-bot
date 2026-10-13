@@ -15,6 +15,7 @@ import { undoLast } from "./undo.js";
 import { setQuietCommand } from "./channels.js";
 import { editList } from "./wizard.js";
 import { jozveListText, jozveRemoveList, jozveCategoryCommand } from "./jozve.js";
+import { scrapeLogText } from "./monitor.js";
 
 // دستورهایی که سطح content هم مجازه
 const CONTENT_CMDS = new Set([
@@ -47,6 +48,7 @@ const HELP = [
   "دستورهای ادمین:",
   "/status — وضعیت ربات",
   "/log — ۲۰ تغییر آخر",
+  "/scrape_log — ۲۰ رویداد آخر اسکرپ (خطا، توقف و برگشت، ارسال به گروه)",
   "/backup — فایل پشتیبان",
   "/set_semester ۱۴۰۵-۰۶-۲۱ — شروع ترم (شنبه، شمسی)",
   "/set_group -100… — شناسه‌ی گروه",
@@ -126,6 +128,8 @@ export async function handleAdminMessage(env, message) {
       return sendMessage(env, chatId, HELP);
     case "/status":
       return sendMessage(env, chatId, await statusText(env));
+    case "/scrape_log":
+      return sendMessage(env, chatId, await scrapeLogText(env));
     case "/jozve_list":
       return sendMessage(env, chatId, await jozveListText(env));
     case "/jozve_remove":

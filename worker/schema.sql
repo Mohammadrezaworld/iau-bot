@@ -39,7 +39,16 @@ CREATE TABLE IF NOT EXISTS scrape_runs (
   ok          INTEGER NOT NULL DEFAULT 1
 );
 
-
+-- رویدادهای پایش اسکرپ: kind = 'error' | 'health' | 'delivered' (برای /scrape_log و گزارش روزانه)
+CREATE TABLE IF NOT EXISTS scrape_events (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  at_utc  INTEGER NOT NULL,
+  source  TEXT NOT NULL,
+  channel TEXT NOT NULL DEFAULT '',
+  kind    TEXT NOT NULL,
+  detail  TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS scrape_events_at ON scrape_events (at_utc);
 
 -- جدول مترو (ساعت‌ها به دقیقه از نیمه‌شب)
 CREATE TABLE IF NOT EXISTS metro_versions (
