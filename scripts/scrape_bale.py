@@ -48,6 +48,23 @@ def _post_id(channel: str, text: str) -> str:
     return hashlib.sha1(f"{channel}|{text}".encode()).hexdigest()[:16]
 
 
+def fetch_with_retry(page, channel: str) -> list[dict]:
+    """یک بار تلاش مجدد پس از ۲۰ ثانیه، اگه صفحه تایم‌اوت شد یا هیچ پستی پیدا نشد."""
+    for attempt in range(2):
+        try:
+            posts = fetch_channel(page, channel)
+            if posts:
+                return posts
+            error = None
+        except Exception as exc:  # noqa: BLE001
+            error = exc
+        if attempt == 0:
+            page.wait_for_timeout(20_000)
+    if error is not None:
+        raise error
+    return []
+
+
 def page_debug(page) -> str:
     info = page.evaluate(
         "() => ({title: document.title, chars: (document.body && document.body.innerText || '').length,"
@@ -58,8 +75,9 @@ def page_debug(page) -> str:
 
 def fetch_channel(page, channel: str) -> list[dict]:
     url = f"https://ble.ir/s/{channel}"
-    page.goto(url, wait_until="networkidle", timeout=90_000)
-    page.wait_for_timeout(5_000)
+    # networkidle روی صفحه‌ی بله گاهی هیچ‌وقت نمی‌رسه؛ با domcontentloaded و انتظار کوتاه برای پست‌ها
+    page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+    page.wait_for_timeout(8_000)
     cards = page.evaluate(EXTRACT_JS)
 
     posts = []
@@ -93,11 +111,7 @@ def main() -> int:
         failed = 0
         for ch in CHANNELS:
             try:
-                posts = fetch_channel(page, ch)
-                if not posts:
-                    # یک بار دیگر با انتظار بیشتر؛ بله گاهی دیر پست‌ها رو نشون می‌ده
-                    page.wait_for_timeout(20_000)
-                    posts = fetch_channel(page, ch)
+                posts = fetch_with_retry(page, ch)
             except Exception as exc:  # noqa: BLE001
                 print(f"ERROR fetch channel={ch} type={type(exc).__name__}", file=sys.stderr)
                 report_error("bale", ch, "fetch", f"{type(exc).__name__}: {exc}")
