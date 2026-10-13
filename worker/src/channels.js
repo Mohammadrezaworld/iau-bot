@@ -4,6 +4,7 @@ import { getSetting } from "./public.js";
 import { audit } from "./admin.js";
 import { normalizeDigits } from "./jalali.js";
 import { pushUndo } from "./undo.js";
+import { recordEvent } from "./monitor.js";
 
 const CHANNEL_LABELS = {
   "bale:iaut_fani": "بله – آزمایشگاه‌های دانشکده",
@@ -58,15 +59,43 @@ export async function keywordsList(env) {
   try { return JSON.parse(raw); } catch { return DEFAULT_KEYWORDS; }
 }
 
+// خروجی: آرایه‌ای از بخش‌ها، هر بخش آرایه‌ای از خط‌ها (تا خط‌ها جدا بمونن و اگه لازم شد جدا فرستاده بشن)
 function chunkMessages(lines) {
   const chunks = [];
-  let cur = "";
+  let cur = [];
+  let len = 0;
   for (const line of lines) {
-    if ((cur + "\n" + line).length > MAX_CHUNK && cur) { chunks.push(cur); cur = line; }
-    else cur = cur ? cur + "\n" + line : line;
+    const add = line.length + (cur.length ? 1 : 0);
+    if (len + add > MAX_CHUNK && cur.length) { chunks.push(cur); cur = [line]; len = line.length; }
+    else { cur.push(line); len += add; }
   }
-  if (cur) chunks.push(cur);
+  if (cur.length) chunks.push(cur);
   return chunks;
+}
+
+// خطاهایی که به خود محتوای یک پیام مربوط‌ان (نه به گروه یا دسترسی ربات)
+const CONTENT_ERROR = /too long|text is empty|parse entities|message text/i;
+const MAX_LINE = 4000;
+
+// بخش را یک‌جا می‌فرسته. اگه تلگرام به‌خاطر محتوا رد کرد، خط‌ها یکی‌یکی و کوتاه‌شده فرستاده می‌شن
+// تا یک پست خراب کل صف رو متوقف نکنه. خطاهای گروه/دسترسی (مثل chat not found) دوباره پرتاب می‌شن
+// تا پست‌ها در صف بمونن و چیزی علامت ارسال نخوره.
+async function sendLinesSafely(env, groupId, lines, label) {
+  try {
+    await tg(env, "sendMessage", { chat_id: groupId, text: lines.join("\n"), disable_web_page_preview: true });
+    return;
+  } catch (err) {
+    if (!CONTENT_ERROR.test(err.message || "")) throw err;
+  }
+  for (const line of lines) {
+    const text = line.length > MAX_LINE ? line.slice(0, MAX_LINE) + "…" : line;
+    try {
+      await tg(env, "sendMessage", { chat_id: groupId, text, disable_web_page_preview: true });
+    } catch (err) {
+      if (!CONTENT_ERROR.test(err.message || "")) throw err;
+      await recordEvent(env, "system", "", "error", `send: ${label} — ${err.message}`);
+    }
+  }
 }
 
 // پست‌های ارسال‌نشده‌ی یک کانال (یا همه‌ی کانال‌ها) رو به گروه می‌فرسته
@@ -99,8 +128,8 @@ export async function flushPosts(env, source = null, channel = null) {
       lines.push(`${important.includes(p) ? "📢 " : "• "}${body}`);
     }
     const chunks = chunkMessages(lines);
-    for (const text of chunks) {
-      await tg(env, "sendMessage", { chat_id: groupId, text, disable_web_page_preview: true });
+    for (const chunk of chunks) {
+      await sendLinesSafely(env, groupId, chunk, label);
     }
 
     // عکس‌ها: آلبوم با حداکثر ۱۰ عکس. اگه تلگرام نتونست بگیره، متن پیام همچنان رفته.
