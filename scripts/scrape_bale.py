@@ -44,6 +44,19 @@ EXTRACT_JS = r"""
 """
 
 
+# فوتر کارت: یک یا چند عدد (بازدید/واکنش) و بعد ساعت، در انتهای متن
+FOOTER_RE = re.compile(r"(?:\s+[0-9\u06F0-\u06F9]+)+\s+[0-9\u06F0-\u06F9]{1,2}:[0-9\u06F0-\u06F9]{2}\s*$")
+
+
+def clean_post_text(raw: str) -> str | None:
+    """متن پست بدون فوتر. اگه بعد از حذف فوتر کمتر از ۳ حرف بمونه (مثل «۴۱ ۷:۴۳»)، None."""
+    text = " ".join(str(raw).split())
+    text = FOOTER_RE.sub("", text).strip()
+    if len(re.findall(r"[^\W\d_]", text)) < 3:
+        return None
+    return text
+
+
 def _post_id(channel: str, text: str) -> str:
     return hashlib.sha1(f"{channel}|{text}".encode()).hexdigest()[:16]
 
@@ -81,10 +94,15 @@ def fetch_channel(page, channel: str) -> list[dict]:
     cards = page.evaluate(EXTRACT_JS)
 
     posts = []
+    seen = set()
     for card in cards:
-        text = card.get("text", "")
-        if not TIME_RE.search(text):
+        raw = card.get("text", "")
+        if not TIME_RE.search(raw):
             continue
+        text = clean_post_text(raw)
+        if text is None or text in seen:
+            continue
+        seen.add(text)
         posts.append({
             "source": "bale",
             "channel": channel,
