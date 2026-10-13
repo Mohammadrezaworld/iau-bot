@@ -1,5 +1,5 @@
 // دستورهای ادمین در DM. کاربرهای عادی در DM هیچ پاسخی نمی‌گیرن.
-import { sendMessage, sendJsonDocument } from "./telegram.js";
+import { sendMessage, sendJsonDocument, sendHtml } from "./telegram.js";
 import { isAdmin, isOwner, audit, buildBackup, statusText, logText, getRole } from "./admin.js";
 import { answerPublic, getSetting } from "./public.js";
 import { parseDateInput, normalizeDigits } from "./jalali.js";
@@ -30,7 +30,7 @@ const CONTENT_CMDS = new Set([
 export const PUBLIC_CMDS = ["/week", "/next", "/term", "/left", "/call", "/links", "/events", "/updates"];
 
 export async function runPublic(env, chatId, cmd) {
-  if (["/call"].includes(cmd)) return sendMessage(env, chatId, await publicContacts(env));
+  if (["/call"].includes(cmd)) return sendHtml(env, chatId, await publicContacts(env));
   if (["/links"].includes(cmd)) return sendMessage(env, chatId, await publicResources(env));
   if (["/events"].includes(cmd)) return sendMessage(env, chatId, await publicEvents(env));
   if (["/updates"].includes(cmd)) return sendMessage(env, chatId, await updatesText(env));
