@@ -121,9 +121,27 @@ export async function flushPosts(env, source = null, channel = null) {
   ).bind(...binds).all();
   if (!results.length) return { sent: 0 };
 
+  // پست‌های بله: فوتر (بازدید و ساعت) پیش از ارسال حذف می‌شه (ردیف‌های قدیمی هم شامل می‌شن)،
+  // و ردیف‌های بی‌متن (فقط عدد/ساعت) بدون ارسال علامت می‌خورن. پست تلگرام دست‌نخورده می‌مونه.
+  const toSend = [];
+  const junkIds = [];
+  for (const p of results) {
+    if (p.source !== "bale") {
+      toSend.push(p);
+    } else if (isJunkPost(p.text)) {
+      junkIds.push(p.id);
+    } else {
+      toSend.push({ ...p, text: cleanPostText(p.text) });
+    }
+  }
+  for (const id of junkIds) {
+    await env.DB.prepare("UPDATE posts SET sent_at_utc = ? WHERE id = ?").bind(nowUtc(), id).run();
+  }
+  if (!toSend.length) return { sent: 0 };
+
   const keywords = await keywordsList(env);
   const groups = {};
-  for (const p of results) (groups[`${p.source}:${p.channel}`] ||= []).push(p);
+  for (const p of toSend) (groups[`${p.source}:${p.channel}`] ||= []).push(p);
 
   let sent = 0;
   for (const [key, posts] of Object.entries(groups)) {
