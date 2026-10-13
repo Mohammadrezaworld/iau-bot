@@ -4,6 +4,8 @@ import { tg, sendMessage, tryDeleteMessage } from "./telegram.js";
 import { isAdmin, getRole, audit } from "./admin.js";
 
 const RESULT_TTL = 300;
+const MENU_TTL = 60; // منو و دستور کاربر بعد از ۶۰ ثانیه پاک می‌شن
+const SEND_COOLDOWN = 300; // هر مجموعه (درس+استاد) در گروه حداکثر هر ۵ دقیقه یک‌بار
 const JOZVE_MENU_KEY = "jozve_menu_msg";
 const RATE_WINDOW = 600;
 const RATE_MAX = 3;
@@ -56,25 +58,42 @@ export async function handleJozvePost(env, post) {
   return sendMessage(env, post.chat.id, `ثبت شد (${label}): ${parsed.course} — ${parsed.professor}`);
 }
 
-async function rememberMsg(env, chatId, msgId) {
+async function rememberMsg(env, chatId, msgId, ttl = RESULT_TTL) {
   await env.DB.prepare(
     `INSERT INTO metro_messages (chat_id, message_id, delete_at_utc) VALUES (?, ?, ?)
      ON CONFLICT(chat_id, message_id) DO UPDATE SET delete_at_utc = excluded.delete_at_utc`
-  ).bind(chatId, msgId, nowS() + RESULT_TTL).run();
+  ).bind(chatId, msgId, nowS() + ttl).run();
 }
 
-async function sendTemp(env, chatId, text, markup) {
-  const sent = await tg(env, "sendMessage", { chat_id: chatId, text, reply_markup: markup });
-  await rememberMsg(env, chatId, sent.message_id);
-}
-
+// ویرایش منو فقط محتوا رو عوض می‌کنه؛ زمان حذفش تمدید نمی‌شه (منو ۶۰ ثانیه بعد از ساخته‌شدن پاک می‌شه)
 async function editTemp(env, chatId, msgId, text, markup) {
   try {
     await tg(env, "editMessageText", { chat_id: chatId, message_id: msgId, text, reply_markup: markup });
   } catch (err) {
     console.error("jozve_edit", err && err.message ? err.message : "unknown");
   }
-  await rememberMsg(env, chatId, msgId);
+}
+
+// وضعیت منوی فعال گروه: شناسه‌ی منو و شناسه‌ی دستور کاربری که منو رو باز کرد
+async function getMenuState(env) {
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = ?").bind(JOZVE_MENU_KEY).first();
+  if (!row || !row.value) return null;
+  try {
+    const st = JSON.parse(row.value);
+    return st && typeof st === "object" ? st : null;
+  } catch {
+    return null;
+  }
+}
+
+async function saveMenuState(env, state) {
+  if (!state) {
+    await env.DB.prepare("DELETE FROM settings WHERE key = ?").bind(JOZVE_MENU_KEY).run();
+    return;
+  }
+  await env.DB.prepare(
+    "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  ).bind(JOZVE_MENU_KEY, JSON.stringify(state)).run();
 }
 
 const ack = (env, cq, text = "") => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text });
@@ -154,15 +173,17 @@ export async function handleJozveCommand(env, msg) {
     await env.DB.prepare("INSERT INTO jozve_usage (user_id, at_utc) VALUES (?, ?)").bind(uid, now).run();
     await env.DB.prepare("DELETE FROM jozve_usage WHERE at_utc < ?").bind(now - 3600).run();
   }
-  // فقط یک منوی فعال در گروه: منوی قبلی حذف می‌شه تا وقتی چند نفر همزمان می‌زنن، منوها کنار هم نمونن
-  const prev = await env.DB.prepare("SELECT value FROM settings WHERE key = ?").bind(JOZVE_MENU_KEY).first();
-  if (prev && prev.value) await tryDeleteMessage(env, chatId, Number(prev.value));
+  // فقط یک منوی فعال در گروه: منوی قبلی و دستورش حذف می‌شن تا منوها کنار هم جمع نشن
+  const prev = await getMenuState(env);
+  if (prev) {
+    if (prev.menu) await tryDeleteMessage(env, chatId, prev.menu);
+    if (prev.cmd) await tryDeleteMessage(env, chatId, prev.cmd);
+  }
   const sent = await tg(env, "sendMessage", { chat_id: chatId, text: "کدوم رو می‌خوای؟", reply_markup: topMarkup() });
-  await rememberMsg(env, chatId, sent.message_id);
-  await env.DB.prepare(
-    "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-  ).bind(JOZVE_MENU_KEY, String(sent.message_id)).run();
-  await tryDeleteMessage(env, chatId, msg.message_id);
+  // منو و دستور کاربر هر دو بعد از ۶۰ ثانیه با هم پاک می‌شن
+  await rememberMsg(env, chatId, sent.message_id, MENU_TTL);
+  await rememberMsg(env, chatId, msg.message_id, MENU_TTL);
+  await saveMenuState(env, { menu: sent.message_id, cmd: msg.message_id });
 }
 
 // دکمه‌های گروه: j:n / j:e (دسته) · j:c:<درس> / j:ec:<درس> · j:f:<درس>|<استاد> / j:ef:<درس>|<استاد> · j:b · j:x
@@ -174,6 +195,12 @@ export async function handleJozveCallback(env, cq) {
   if (data === "j:x") {
     await tryDeleteMessage(env, chatId, msgId);
     await env.DB.prepare("DELETE FROM metro_messages WHERE chat_id = ? AND message_id = ?").bind(chatId, msgId).run();
+    // اگه منوی فعال بسته شد، دستور کاربرش هم پاک می‌شه
+    const st = await getMenuState(env);
+    if (st && st.menu === msgId) {
+      if (st.cmd) await tryDeleteMessage(env, chatId, st.cmd);
+      await saveMenuState(env, null);
+    }
     return ack(env, cq);
   }
 
@@ -230,9 +257,40 @@ export async function handleJozveCallback(env, cq) {
     const professor = rest.slice(sep + 1);
     const { results } = await env.DB.prepare(
       `SELECT channel_msg_id, title, file_name FROM ${TABLE[kind]} WHERE course = ? AND professor = ? ORDER BY id LIMIT ?`
-    ).bind(course, professor, MAX_FILES_PER_SEND).all();
+    ).bind(course, professor, MAX_FILES_PER_SEND * 3).all();
     if (!results.length) return ack(env, cq, "فایلی پیدا نشد");
+
+    // هر مجموعه در گروه فقط هر چند دقیقه یک‌بار فرستاده می‌شه
+    const sentKey = `jozve_sent:${kind}:${course}|${professor}`;
+    const lastSent = await env.DB.prepare("SELECT value FROM settings WHERE key = ?").bind(sentKey).first();
+    if (lastSent && nowS() - Number(lastSent.value) < SEND_COOLDOWN) {
+      return ack(env, cq, "همین الان فرستاده شد؛ بالای گروه ببین");
+    }
+
+    // سقف درخواست فایل برای کاربر عادی (با شمارش دستور /jozve)
+    const uid = cq.from && cq.from.id;
+    if (!(await isAdmin(env, uid))) {
+      const now = nowS();
+      const r = await env.DB.prepare("SELECT COUNT(*) AS n FROM jozve_usage WHERE user_id = ? AND at_utc > ?")
+        .bind(uid, now - RATE_WINDOW).first();
+      if (r.n >= RATE_MAX) return ack(env, cq, "درخواست زیاد شد؛ چند دقیقه دیگه امتحان کن");
+      await env.DB.prepare("INSERT INTO jozve_usage (user_id, at_utc) VALUES (?, ?)").bind(uid, now).run();
+    }
+
+    await env.DB.prepare(
+      "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    ).bind(sentKey, String(nowS())).run();
+
+    // فایل‌های هم‌نام فقط یک بار (فایل تکراری توی کانال دو بار ثبت شده بود)
+    const seen = new Set();
+    const unique = [];
     for (const f of results) {
+      const key = (f.file_name || String(f.channel_msg_id)).toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      unique.push(f);
+    }
+    for (const f of unique.slice(0, MAX_FILES_PER_SEND)) {
       // copyMessage: بدون «فوروارد از» و بدون محدودیت حجم، چون تلگرام خودش کپی می‌کنه
       await tg(env, "copyMessage", {
         chat_id: chatId,
