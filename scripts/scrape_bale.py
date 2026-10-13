@@ -7,6 +7,8 @@ import hashlib
 import json
 import re
 import sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from playwright.sync_api import sync_playwright
 
@@ -86,11 +88,72 @@ def page_debug(page) -> str:
     return f"title={info['title']!r} chars={info['chars']} nodes={info['cards']}"
 
 
+TEHRAN = ZoneInfo("Asia/Tehran")
+
+# ساختار جدید صفحه: هر پیام یک بلوک با data-sid (شناسه‌ی ثابت) و جداکننده‌ی روز با datetime (UTC).
+# همه‌ی گره‌ها به ترتیب صفحه خونده می‌شن تا تاریخ هر پیام از نزدیک‌ترین جداکننده‌ی بالاش گرفته بشه.
+EXTRACT_V2_JS = r"""
+() => {
+  const out = [];
+  let currentDate = "";
+  const nodes = document.querySelectorAll('time[datetime], [class*="MessageItem_messageWrapper"]');
+  for (const n of nodes) {
+    if (n.tagName === "TIME") { currentDate = n.getAttribute("datetime") || currentDate; continue; }
+    const text = (n.innerText || "").trim();
+    if (!text) continue;
+    const images = Array.from(n.querySelectorAll("img"))
+      .map((i) => i.currentSrc || i.src || "")
+      .filter((u) => u && !u.startsWith("data:"));
+    out.push({ sid: n.getAttribute("data-sid") || "", date: currentDate, text, images });
+  }
+  return out.slice(-80);
+}
+"""
+
+
+def tehran_date(iso: str) -> str:
+    """تاریخ تهران (YYYY-MM-DD) از datetime جداکننده‌ی UTC؛ خالی اگه معلوم نیست."""
+    if not iso:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    return dt.astimezone(TEHRAN).date().isoformat()
+
+
+def posts_from_v2(cards: list[dict], channel: str) -> list[dict]:
+    posts = []
+    seen = set()
+    for card in cards:
+        sid = str(card.get("sid") or "")
+        raw = card.get("text", "")
+        if not sid or sid in seen or not TIME_RE.search(raw):
+            continue
+        text = clean_post_text(raw)
+        if text is None:
+            continue
+        seen.add(sid)
+        posts.append({
+            "source": "bale",
+            "channel": channel,
+            "post_id": sid,
+            "text": text,
+            "post_date": tehran_date(card.get("date", "")),
+            "image_url": next((u for u in card.get("images", []) if u.startswith("http")), ""),
+        })
+    return posts
+
+
 def fetch_channel(page, channel: str) -> list[dict]:
     url = f"https://ble.ir/s/{channel}"
     # networkidle روی صفحه‌ی بله گاهی هیچ‌وقت نمی‌رسه؛ با domcontentloaded و انتظار کوتاه برای پست‌ها
     page.goto(url, wait_until="domcontentloaded", timeout=60_000)
     page.wait_for_timeout(8_000)
+    # اول ساختار جدید (با data-sid و تاریخ)؛ اگه نبود، ساختار قبلی
+    posts = posts_from_v2(page.evaluate(EXTRACT_V2_JS), channel)
+    if posts:
+        return posts
     cards = page.evaluate(EXTRACT_JS)
 
     posts = []
