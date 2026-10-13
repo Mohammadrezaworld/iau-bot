@@ -1,7 +1,7 @@
 // دستورهای ادمین در DM. کاربرهای عادی در DM هیچ پاسخی نمی‌گیرن.
 import { sendMessage, sendJsonDocument, sendHtml } from "./telegram.js";
 import { isAdmin, isOwner, audit, buildBackup, statusText, logText, getRole } from "./admin.js";
-import { answerPublic, getSetting } from "./public.js";
+import { answerPublic, getSetting, sendCachedAnswer } from "./public.js";
 import { parseDateInput, normalizeDigits } from "./jalali.js";
 import { startWizard, handleWizardText, removeList } from "./wizard.js";
 import { updatesText, flushPosts } from "./channels.js";
@@ -30,8 +30,15 @@ const CONTENT_CMDS = new Set([
 export const PUBLIC_CMDS = ["/week", "/next", "/term", "/left", "/call", "/links", "/events", "/updates"];
 
 export async function runPublic(env, chatId, cmd) {
-  if (["/call"].includes(cmd)) return sendHtml(env, chatId, await publicContacts(env));
-  if (["/links"].includes(cmd)) return sendMessage(env, chatId, await publicResources(env));
+  if (["/call"].includes(cmd)) {
+    const html = await publicContacts(env);
+    return sendCachedAnswer(env, chatId, "/call", html, async () => (await sendHtml(env, chatId, html)).message_id);
+  }
+  if (["/links"].includes(cmd)) {
+    const text = await publicResources(env);
+    return sendCachedAnswer(env, chatId, "/links", text, async () =>
+      (await tg(env, "sendMessage", { chat_id: chatId, text, disable_web_page_preview: true })).message_id);
+  }
   if (["/events"].includes(cmd)) return sendMessage(env, chatId, await publicEvents(env));
   if (["/updates"].includes(cmd)) return sendMessage(env, chatId, await updatesText(env));
   return answerPublic(env, chatId, cmd);
