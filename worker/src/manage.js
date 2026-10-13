@@ -1,5 +1,6 @@
 // مدیریت شماره‌ها، لینک‌ها و رویدادها توسط ادمین (DM). حذف‌ها با تأیید ۶۰ ثانیه‌ای.
 import { audit } from "./admin.js";
+import { escHtml } from "./telegram.js";
 import { faDate, faNum, tehranToday, daysBetween } from "./calendar.js";
 import { parseDateInput, normalizeDigits } from "./jalali.js";
 
@@ -166,6 +167,7 @@ export async function publicEvents(env) {
   })].join("\n");
 }
 
+// خروجی HTML: نام هر اداره داخل blockquote، شماره داخل code (با لمس کپی می‌شه)
 export async function publicContacts(env) {
   const { results } = await env.DB.prepare("SELECT * FROM contacts ORDER BY category, sort_order, id").all();
   if (!results.length) return "هنوز شماره‌ای ثبت نشده.";
@@ -173,10 +175,14 @@ export async function publicContacts(env) {
   for (const c of results) (groups[c.category] ||= []).push(c);
   const out = [];
   for (const [cat, items] of Object.entries(groups)) {
-    out.push(`【${cat}】`);
-    for (const c of items) out.push(`• ${c.name}: ${c.number}${c.note ? " (" + c.note + ")" : ""}`);
+    out.push(`<b>【${escHtml(cat)}】</b>`);
+    for (const c of items) {
+      const label = `${escHtml(c.name)}${c.note ? " (" + escHtml(c.note) + ")" : ""}`;
+      out.push(`<blockquote>${label}</blockquote>`, `<code>${escHtml(c.number)}</code>`);
+    }
+    out.push("");
   }
-  out.push("", "جستجوی شماره‌ی کارکنان: /links");
+  out.push("جستجوی شماره‌ی کارکنان: /links");
   return out.join("\n");
 }
 
