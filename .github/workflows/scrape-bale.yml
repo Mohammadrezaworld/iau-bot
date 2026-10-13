@@ -32,3 +32,13 @@ jobs:
         env:
           INGEST_SECRET: ${{ secrets.INGEST_SECRET }}
         run: python scrape_bale.py
+
+      - name: Report failure to worker
+        if: failure()
+        env:
+          INGEST_SECRET: ${{ secrets.INGEST_SECRET }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          PAYLOAD=$(python3 -c 'import json,os; print(json.dumps({"source":"bale","channel":"","stage":"workflow","message":"اجرای ناموفق: "+os.environ["RUN_URL"]}))')
+          curl -s -m 20 -o /dev/null -X POST "https://iaut-bot.rimon24288.workers.dev/scrape-report" \
+            -H "x-ingest-secret: $INGEST_SECRET" -H "content-type: application/json" -d "$PAYLOAD" || true
