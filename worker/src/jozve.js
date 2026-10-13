@@ -4,6 +4,7 @@ import { tg, sendMessage, tryDeleteMessage } from "./telegram.js";
 import { isAdmin, getRole, audit } from "./admin.js";
 
 const RESULT_TTL = 300;
+const JOZVE_MENU_KEY = "jozve_menu_msg";
 const RATE_WINDOW = 600;
 const RATE_MAX = 3;
 const MAX_NAME_BYTES = 29; // callback_data حداکثر ۶۴ بایته: «j:ef:» + درس + «|» + استاد
@@ -153,7 +154,14 @@ export async function handleJozveCommand(env, msg) {
     await env.DB.prepare("INSERT INTO jozve_usage (user_id, at_utc) VALUES (?, ?)").bind(uid, now).run();
     await env.DB.prepare("DELETE FROM jozve_usage WHERE at_utc < ?").bind(now - 3600).run();
   }
-  await sendTemp(env, chatId, "کدوم رو می‌خوای؟", topMarkup());
+  // فقط یک منوی فعال در گروه: منوی قبلی حذف می‌شه تا وقتی چند نفر همزمان می‌زنن، منوها کنار هم نمونن
+  const prev = await env.DB.prepare("SELECT value FROM settings WHERE key = ?").bind(JOZVE_MENU_KEY).first();
+  if (prev && prev.value) await tryDeleteMessage(env, chatId, Number(prev.value));
+  const sent = await tg(env, "sendMessage", { chat_id: chatId, text: "کدوم رو می‌خوای؟", reply_markup: topMarkup() });
+  await rememberMsg(env, chatId, sent.message_id);
+  await env.DB.prepare(
+    "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  ).bind(JOZVE_MENU_KEY, String(sent.message_id)).run();
   await tryDeleteMessage(env, chatId, msg.message_id);
 }
 
