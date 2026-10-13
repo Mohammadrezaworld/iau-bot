@@ -5,7 +5,6 @@ import { isAdmin, getRole, audit } from "./admin.js";
 
 const RESULT_TTL = 300;
 const MENU_TTL = 60; // منو و دستور کاربر بعد از ۶۰ ثانیه پاک می‌شن
-const SEND_COOLDOWN = 300; // هر مجموعه (درس+استاد) در گروه حداکثر هر ۵ دقیقه یک‌بار
 const JOZVE_MENU_KEY = "jozve_menu_msg";
 const RATE_WINDOW = 600;
 const RATE_MAX = 3;
@@ -186,6 +185,40 @@ export async function handleJozveCommand(env, msg) {
   await saveMenuState(env, { menu: sent.message_id, cmd: msg.message_id });
 }
 
+// هر فایل یک کلید ثابت داره؛ شناسه‌ی پیامی که توی گروه ساخته شده رو نگه می‌داریم تا دفعه‌ی بعد دوباره کپی نشه
+function fileKey(course, professor, f) {
+  return `${course}|${professor}|${(f.file_name || String(f.channel_msg_id)).toLowerCase()}`;
+}
+
+// فایل قبلاً فرستاده شده → زیر همون پیام ریپلای می‌شه؛ اگه پیام قبلی پاک شده باشه، دوباره کپی می‌شه
+// کپی بدون caption فرستاده می‌شه تا کپشن اصلی کانال حفظ بشه
+async function sendFileOnce(env, chatId, key, f) {
+  const rec = await env.DB.prepare("SELECT value FROM settings WHERE key = ?").bind(`jozve_file:${key}`).first();
+  if (rec && rec.value) {
+    try {
+      await tg(env, "sendMessage", {
+        chat_id: chatId,
+        text: "این فایل قبلاً ارسال شده ↑",
+        reply_to_message_id: Number(rec.value),
+        disable_web_page_preview: true,
+      });
+      return "replied";
+    } catch (err) {
+      if (!/not found/i.test(err && err.message ? err.message : "")) throw err;
+      // پیام قبلی پاک شده: دوباره کپی می‌کنیم
+    }
+  }
+  const copied = await tg(env, "copyMessage", {
+    chat_id: chatId,
+    from_chat_id: env.JOZVE_CHANNEL,
+    message_id: f.channel_msg_id,
+  });
+  await env.DB.prepare(
+    "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  ).bind(`jozve_file:${key}`, String(copied.message_id)).run();
+  return "copied";
+}
+
 // دکمه‌های گروه: j:n / j:e (دسته) · j:c:<درس> / j:ec:<درس> · j:f:<درس>|<استاد> / j:ef:<درس>|<استاد> · j:b · j:x
 export async function handleJozveCallback(env, cq) {
   const data = String(cq.data || "");
@@ -260,14 +293,7 @@ export async function handleJozveCallback(env, cq) {
     ).bind(course, professor, MAX_FILES_PER_SEND * 3).all();
     if (!results.length) return ack(env, cq, "فایلی پیدا نشد");
 
-    // هر مجموعه در گروه فقط هر چند دقیقه یک‌بار فرستاده می‌شه
-    const sentKey = `jozve_sent:${kind}:${course}|${professor}`;
-    const lastSent = await env.DB.prepare("SELECT value FROM settings WHERE key = ?").bind(sentKey).first();
-    if (lastSent && nowS() - Number(lastSent.value) < SEND_COOLDOWN) {
-      return ack(env, cq, "همین الان فرستاده شد؛ بالای گروه ببین");
-    }
-
-    // سقف درخواست فایل برای کاربر عادی (با شمارش دستور /jozve)
+    // سقف درخواست برای کاربر عادی (با شمارش دستور /jozve)
     const uid = cq.from && cq.from.id;
     if (!(await isAdmin(env, uid))) {
       const now = nowS();
@@ -277,27 +303,14 @@ export async function handleJozveCallback(env, cq) {
       await env.DB.prepare("INSERT INTO jozve_usage (user_id, at_utc) VALUES (?, ?)").bind(uid, now).run();
     }
 
-    await env.DB.prepare(
-      "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-    ).bind(sentKey, String(nowS())).run();
-
-    // فایل‌های هم‌نام فقط یک بار (فایل تکراری توی کانال دو بار ثبت شده بود)
-    const seen = new Set();
-    const unique = [];
-    for (const f of results) {
-      const key = (f.file_name || String(f.channel_msg_id)).toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      unique.push(f);
-    }
-    for (const f of unique.slice(0, MAX_FILES_PER_SEND)) {
-      // copyMessage: بدون «فوروارد از» و بدون محدودیت حجم، چون تلگرام خودش کپی می‌کنه
-      await tg(env, "copyMessage", {
-        chat_id: chatId,
-        from_chat_id: env.JOZVE_CHANNEL,
-        message_id: f.channel_msg_id,
-        caption: f.title || f.file_name || "",
-      });
+    // فایل‌های هم‌نام (درس+استاد+نام) در یک درخواست فقط یک بار
+    const seenKeys = new Set();
+    for (const f of results.slice(0, MAX_FILES_PER_SEND * 3)) {
+      const key = fileKey(course, professor, f);
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      if (seenKeys.size > MAX_FILES_PER_SEND) break;
+      await sendFileOnce(env, chatId, key, f);
     }
     return ack(env, cq);
   }
