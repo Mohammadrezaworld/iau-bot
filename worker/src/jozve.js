@@ -467,7 +467,7 @@ export async function handleJozveRemoveCallback(env, cq) {
 // هر کاربر یک منوی فعال داره؛ جابه‌جایی با ویرایش همان پیام. دسترسی فقط برای اعضای گروه اصلی.
 const DM_TTL = 120; // هر کلیک، ۱۲۰ ثانیه‌ی دیگه می‌ده
 const DM_MAX_LIFE = 240; // سقف عمر منو از لحظه‌ی ساخت
-const DM_NOT_MEMBER = "برای استفاده از این منو باید عضو گروه اصلی باشی. بعد از عضویت دوباره /jozve بزن.";
+export const DM_NOT_MEMBER = "برای استفاده از خدمات ربات باید عضو گروه اصلی باشی. بعد از عضویت دوباره /start بزن.";
 const DM_EXPIRED = "این منو منقضی شده. دوباره /jozve بزن.";
 const DM_NOT_OWNER = "این منو مال تو نیست!";
 const DM_LINK_LIMIT = 40;
@@ -478,7 +478,7 @@ const letterOf = (kind) => (kind === "note" ? "n" : "e");
 // دکمه‌ها: d:m منوی اصلی · d:n|d:e دسته‌ها · d:c<K><دسته> درس‌ها · d:o<K><درس> استادها · d:f<K><درس>|<استاد> فایل‌ها · d:x بستن
 // K = n (جزوه) یا e (نمونه‌سوال). نام درس و استاد حداکثر ۲۹ بایت، پس callback_data از ۶۴ بایت رد نمی‌شه.
 
-async function dmIsMember(env, uid) {
+export async function dmIsMember(env, uid) {
   const groupId = await env.DB.prepare("SELECT value FROM settings WHERE key = 'group_id'").first();
   if (!groupId || !groupId.value) return false;
   try {
@@ -599,14 +599,6 @@ export async function openDmMenu(env, uid) {
   const now = nowS();
   await saveDmMenu(env, uid, { msg: sent.message_id, created: now });
   await rememberMsg(env, uid, sent.message_id, DM_TTL);
-}
-
-// پیام‌های پیوی کاربر عادی: فقط /start و /jozve جواب داده می‌شن، بقیه بی‌صدا
-export async function handleDmMessage(env, msg) {
-  if (!msg.from || (await isAdmin(env, msg.from.id))) return false;
-  const cmd = String(msg.text || "").trim().split(/\s+/)[0].toLowerCase().split("@")[0];
-  if (cmd === "/start" || cmd === "/jozve") await openDmMenu(env, msg.chat.id);
-  return true;
 }
 
 // کلیک روی منوی پیوی: فقط صاحب منو و فقط اگه هنوز عضو گروه باشه
