@@ -49,7 +49,7 @@ const DM_WELCOME = [
   "این ربات خدمات گروه رو اینجا، در پیوی، ارائه می‌ده تا گروه شلوغ نشه.",
   "",
   "جزوه‌ها و نمونه‌سوال‌ها",
-  "دستور /jozve رو بزن و از دسته، درس و استاد انتخاب کن. هر فایل یک دکمه‌ی لینک داره که مستقیم به پست کانال می‌ره.",
+  "از دکمه‌های زیر یا دستور /menu جزوه یا نمونه‌سوال رو انتخاب کن. بعد از دسته، درس و استاد، هر فایل یک دکمه‌ی لینک داره که مستقیم به پست کانال می‌ره.",
   "",
   "دستورهای دیگه:",
   "/call شماره‌های مفید",
@@ -72,10 +72,10 @@ export async function handleDmUser(env, msg) {
   const { cmd } = parseCmd(msg.text);
   if (cmd === "/start") {
     if (!(await dmIsMember(env, uid))) return sendGate(env, chatId, `${DM_WELCOME}\n\n${DM_NOT_MEMBER}`);
-    await sendMessage(env, chatId, DM_WELCOME);
-    return openDmMenu(env, uid);
+    // خوش‌آمد و دکمه‌های منو در یک پیام
+    return openDmMenu(env, uid, DM_WELCOME);
   }
-  if (cmd === "/jozve") return openDmMenu(env, uid);
+  if (cmd === "/jozve" || cmd === "/menu") return openDmMenu(env, uid);
   // /updates در پیوی نیست: برای کاربر لازم نیست وضعیت بررسی کانال‌ها رو بخونه
   if (PUBLIC_CMDS.includes(cmd) && cmd !== "/updates") {
     if (!(await dmIsMember(env, uid))) return sendGate(env, chatId, DM_NOT_MEMBER);
