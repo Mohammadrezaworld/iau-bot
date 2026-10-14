@@ -209,6 +209,9 @@ export async function resolveUpdate(env, id, decision) {
     await env.DB.prepare("UPDATE update_queue SET state = 'done', reason = 'owner_applied', payload = NULL, lease = '' WHERE update_id = ?").bind(id).run();
     // بخش‌های دسته‌ی اسکرپ که مالک «اعمال شد» گفته، پست‌هاشون ارسال‌شده علامت می‌خوره
     await env.DB.prepare(
+      "INSERT OR IGNORE INTO post_outcomes (post_id, outcome, at_utc) SELECT bi.post_id, 'owner_applied', ? FROM scrape_batch_items bi JOIN effects e ON e.op_key = bi.unit JOIN posts p ON p.id = bi.post_id WHERE e.update_id = ? AND p.sent_at_utc IS NULL"
+    ).bind(nowS(), id).run();
+    await env.DB.prepare(
       "UPDATE posts SET sent_at_utc = ? WHERE sent_at_utc IS NULL AND id IN (SELECT bi.post_id FROM scrape_batch_items bi JOIN effects e ON e.op_key = bi.unit WHERE e.update_id = ?)"
     ).bind(nowS(), id).run();
     return "ثبت شد: اثر انجام شده و درخواست بسته شد.";

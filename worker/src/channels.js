@@ -5,6 +5,7 @@ import { audit } from "./admin.js";
 import { normalizeDigits } from "./jalali.js";
 import { pushUndo } from "./undo.js";
 import { recordEvent } from "./monitor.js";
+import { setOutcome, statusReport } from "./outcomes.js";
 
 const CHANNEL_LABELS = {
   "bale:iaut_fani": "بله – آزمایشگاه‌های دانشکده",
@@ -68,7 +69,7 @@ async function unsentCount(env) {
 export async function scrapeCommand(env, chatId, userId, cmd, arg, owner) {
   if (cmd === "/scrape_status") {
     const paused = await scrapePaused(env);
-    return sendMessage(env, chatId, `ارسال به گروه: ${paused ? "متوقف" : "فعال"}\nپست‌های ارسال‌نشده: ${await unsentCount(env)}`);
+    return sendMessage(env, chatId, `ارسال به گروه: ${paused ? "متوقف" : "فعال"}\n${await statusReport(env)}`);
   }
   if (!owner) return sendMessage(env, chatId, "این دستور فقط برای مالک ربات است.");
   if (cmd === "/scrape_pause") {
@@ -82,6 +83,7 @@ export async function scrapeCommand(env, chatId, userId, cmd, arg, owner) {
     const all = normalizeForMatch(arg) === "all";
     const before = await unsentCount(env);
     if (!all) {
+      await setOutcome(env, (await env.DB.prepare("SELECT id FROM posts WHERE sent_at_utc IS NULL").all()).results.map((r) => r.id), "skipped_resume");
       await env.DB.prepare("UPDATE posts SET sent_at_utc = ? WHERE sent_at_utc IS NULL").bind(nowUtc()).run();
       // دسته‌های منتظر تأیید هم رد می‌شن (پست‌هاشون بالا علامت خوردن)
       await env.DB.prepare("UPDATE scrape_batches SET state = 'rejected' WHERE state = 'pending'").run();
