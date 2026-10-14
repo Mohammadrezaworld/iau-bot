@@ -180,7 +180,7 @@ export async function handleAdminMessage(env, message) {
   const removeTypes = { "/event_remove": "event", "/call_remove": "call", "/link_remove": "link" };
   if (removeTypes[cmd] && !arg) return removeList(env, chatId, removeTypes[cmd]);
 
-  const managed = await handleManage(env, userId, cmd, arg);
+  const managed = await handleManage(env, userId, cmd, arg, `msg:${chatId}:${message.message_id}`);
   if (managed !== null) return sendMessage(env, chatId, managed);
 
   switch (cmd) {

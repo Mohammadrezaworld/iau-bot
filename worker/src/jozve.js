@@ -3,6 +3,7 @@
 import { tg, sendMessage, tryDeleteMessage } from "./telegram.js";
 import { isAdmin, getRole, audit } from "./admin.js";
 import { recordEvent } from "./monitor.js";
+import { claimExternal, finishExternal, LeaseLostError, AmbiguousError } from "./effects.js";
 
 const RESULT_TTL = 300;
 const LINKS_TTL = 600; // پیام لیست لینک‌های فایل‌های قبلی بعد از ۱۰ دقیقه پاک می‌شه
@@ -246,7 +247,7 @@ function groupMsgLink(chatId, msgId) {
 }
 
 // دکمه‌های گروه: j:n / j:e (دسته) · j:c:<درس> / j:ec:<درس> · j:f:<درس>|<استاد> / j:ef:<درس>|<استاد> · j:b · j:x
-export async function handleJozveCallback(env, cq) {
+export async function handleJozveCallback(env, cq, ctx = null) {
   const data = String(cq.data || "");
   const chatId = cq.message.chat.id;
   const msgId = cq.message.message_id;
@@ -333,6 +334,7 @@ export async function handleJozveCallback(env, cq) {
     const oldFiles = [];
     let copies = 0;
     let copyFailed = 0;
+    let ambiguous = 0;
     for (const f of results.slice(0, MAX_FILES_PER_SEND * 3)) {
       const key = fileKey(course, professor, f);
       if (seenKeys.has(key)) continue;
@@ -343,7 +345,18 @@ export async function handleJozveCallback(env, cq) {
         oldFiles.push({ name: f.title || f.file_name || "فایل", id: prevId });
         continue;
       }
-      // خطای یک فایل، بقیه‌ی فایل‌ها رو متوقف نمی‌کنه. این فایل ثبت نمی‌شه تا دفعه‌ی بعد دوباره امتحان بشه
+      // ارسال فقط بعد از claim با lease همین اجرا (effects): تأیید هم‌زمان یا اجرای قدیمی، دو کپی نمی‌سازه
+      const opKey = `publish:${chatId}:${key}`;
+      const claim = await claimExternal(env, ctx, opKey, "publish");
+      if (claim.status === "lease_lost") throw new LeaseLostError();
+      if (claim.status === "done") {
+        // قبلاً فرستاده شده: اگه شناسه‌ی پیام معلومه، لینکش داده می‌شه (تأیید دستی مالک شناسه نداره)
+        if (claim.msgId) oldFiles.push({ name: f.title || f.file_name || "فایل", id: claim.msgId });
+        continue;
+      }
+      if (claim.status === "busy") { copyFailed += 1; continue; }
+      if (claim.status === "ambiguous") { ambiguous += 1; continue; }
+      // خطای یک فایل، بقیه‌ی فایل‌ها رو متوقف نمی‌کنه
       try {
         // copyMessage بدون caption: کپشن اصلی کانال حفظ می‌شه
         const copied = await tg(env, "copyMessage", {
@@ -351,11 +364,20 @@ export async function handleJozveCallback(env, cq) {
           from_chat_id: env.JOZVE_CHANNEL,
           message_id: f.channel_msg_id,
         });
+        await finishExternal(env, ctx, opKey, { ok: true, msgId: copied.message_id, result: `copy ${key}` });
         await saveFileRecord(env, key, copied.message_id);
         copies += 1;
       } catch (err) {
         copyFailed += 1;
-        await recordEvent(env, "jozve", "", "error", `copy ${key}: ${err && err.message ? err.message : "unknown"}`);
+        const msgText = err && err.message ? err.message : "unknown";
+        if (err && err.refused) {
+          // تلگرام صریحاً رد کرده؛ اثری نبوده و تلاش بعدی مجازه
+          await finishExternal(env, ctx, opKey, { ok: false, error: msgText });
+        } else {
+          // نتیجه نامشخصه (شبکه/پاسخ ناخوانا): intent می‌مونه و تا تصمیم مالک دوباره ارسال نمی‌شه
+          ambiguous += 1;
+        }
+        await recordEvent(env, "jozve", "", "error", `copy ${key}: ${msgText}`);
       }
     }
 
@@ -365,6 +387,11 @@ export async function handleJozveCallback(env, cq) {
       const lines = ["این فایل‌ها قبلاً ارسال شدن (روی هر کدوم بزنی می‌ره):", ...links.map((o) => `• ${o.name}\n${o.url}`)];
       const sent = await tg(env, "sendMessage", { chat_id: chatId, text: lines.join("\n"), disable_web_page_preview: true });
       await rememberMsg(env, chatId, sent.message_id, LINKS_TTL);
+    }
+    if (ambiguous) {
+      // نتیجه‌ی بعضی فایل‌ها نامشخصه: تلاش خودکار نمی‌کنیم؛ مالک با /review تصمیم می‌گیره
+      await ack(env, cq, "بعضی فایل‌ها نیاز به بررسی دارن؛ مالک خبر می‌گیره");
+      throw new AmbiguousError(`publish:${chatId}:${msgId}`);
     }
     if (!copies && !links.length) {
       return ack(env, cq, copyFailed ? "ارسال نشد؛ دوباره امتحان کن" : "فایلی پیدا نشد");

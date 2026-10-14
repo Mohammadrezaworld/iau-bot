@@ -249,15 +249,58 @@ INSERT OR IGNORE INTO course_categories (course, category) VALUES
   ('تفسیر موضوعی قرآن', 'معارف'),
   ('تفسیر موضوعی نهج البلاغه', 'معارف');
 
--- صف idempotent webhook: هر update_id فقط یک بار موفق پردازش می‌شه (processing · done · failed)
+-- جدول قدیمی صف webhook (در prod هست؛ حذف نمی‌شه). داده‌هاش یک بار به update_queue منتقل می‌شه.
+CREATE TABLE IF NOT EXISTS processed_updates (
+  update_id INTEGER PRIMARY KEY,
+  state     TEXT NOT NULL,
+  attempts  INTEGER NOT NULL DEFAULT 1,
+  at_utc    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS processed_updates_at ON processed_updates (at_utc);
+
+-- ثبت مهاجرت‌های یک‌باره (برای اجرای امن schema روی هر deploy)
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  name   TEXT PRIMARY KEY,
+  at_utc INTEGER NOT NULL
+);
+
+-- صف update های webhook (ماژول updates.js)
 CREATE TABLE IF NOT EXISTS update_queue (
-  update_id  INTEGER PRIMARY KEY,
-  state      TEXT NOT NULL,
-  attempts   INTEGER NOT NULL DEFAULT 1,
-  lease      TEXT NOT NULL DEFAULT '',
-  payload    TEXT,
-  last_error TEXT NOT NULL DEFAULT '',
-  at_utc     INTEGER NOT NULL
+  update_id    INTEGER PRIMARY KEY,
+  state        TEXT NOT NULL,              -- processing · done · failed · needs_review
+  attempts     INTEGER NOT NULL DEFAULT 1,
+  lease        TEXT NOT NULL DEFAULT '',
+  payload      TEXT,                       -- متن update برای تلاش مجدد (بعد از done پاک می‌شه)
+  last_error   TEXT NOT NULL DEFAULT '',
+  reason       TEXT NOT NULL DEFAULT '',   -- error · exhausted · ambiguous · done_write · migrated · owner_applied · owner_not_applied
+  notify_state TEXT NOT NULL DEFAULT 'none', -- none · sent · failed
+  at_utc       INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS update_queue_at ON update_queue (at_utc);
 CREATE INDEX IF NOT EXISTS update_queue_state ON update_queue (state);
+
+-- اثرهای ثبت‌شده (DB و ارسال بیرونی). کلید عملیات پایدار است؛ intent یعنی نتیجه نامشخص.
+CREATE TABLE IF NOT EXISTS effects (
+  op_key     TEXT PRIMARY KEY,
+  kind       TEXT NOT NULL,
+  state      TEXT NOT NULL,                -- intent · done · failed
+  update_id  INTEGER,
+  lease      TEXT NOT NULL DEFAULT '',
+  result     TEXT NOT NULL DEFAULT '',
+  msg_id     INTEGER,
+  last_error TEXT NOT NULL DEFAULT '',
+  at_utc     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS effects_update ON effects (update_id, state);
+
+-- مهاجرت یک‌باره: done قدیمی done می‌مونه؛ بقیه (processing/failed) نامشخص‌اند و برای بررسی مالک میان
+INSERT OR IGNORE INTO update_queue (update_id, state, attempts, lease, payload, last_error, reason, at_utc)
+  SELECT update_id,
+         CASE WHEN state = 'done' THEN 'done' ELSE 'needs_review' END,
+         attempts, '', NULL,
+         'migrated from processed_updates (state=' || state || ')',
+         CASE WHEN state = 'done' THEN '' ELSE 'migrated' END,
+         at_utc
+  FROM processed_updates
+  WHERE NOT EXISTS (SELECT 1 FROM schema_migrations WHERE name = 'processed_to_queue_v2');
+INSERT OR IGNORE INTO schema_migrations (name, at_utc) VALUES ('processed_to_queue_v2', CAST(strftime('%s', 'now') AS INTEGER));
