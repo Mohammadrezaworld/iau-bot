@@ -8,7 +8,8 @@ import { handleCallback } from "./wizard.js";
 import { handleKeywordCallback } from "./keywords.js";
 import { handleHolidayCallback } from "./holidays.js";
 import { handleJozvePost, handleJozveCommand, handleJozveCallback, handleJozveRemoveCallback, handleDmCallback, groupMovedGuide, dmIsMember, DM_NOT_MEMBER } from "./jozve.js";
-import { flushPosts, cleanPostText, inTehranQuietHours } from "./channels.js";
+import { cleanPostText, inTehranQuietHours } from "./channels.js";
+import { prepareBatch, handleBatchCallback, expireBatches } from "./batches.js";
 import { isAdmin, isOwner } from "./admin.js";
 import { buildBackup } from "./admin.js";
 import { sendJsonDocument, tg } from "./telegram.js";
@@ -120,8 +121,8 @@ async function handleIngest(request, env) {
   let delivered = null;
   if (!firstRun && !dryRun && !held && sendCount > 0) {
     try {
-      delivered = await flushPosts(env, source, channel);
-      if (delivered && delivered.sent) await recordEvent(env, source, channel, "delivered", String(delivered.sent));
+      delivered = await prepareBatch(env);
+      if (delivered && delivered.prepared) await recordEvent(env, source, channel, "delivered", `batch:${delivered.prepared}`);
     } catch (err) {
       await reportError(env, source, channel, "flush", err && err.message ? err.message : "unknown");
     }
@@ -183,6 +184,13 @@ async function dispatchUpdate(env, update, ctx = null) {
   if (update && update.callback_query) {
     const cq = update.callback_query;
     const data = cq.data || "";
+    if (data.startsWith("sb:")) {
+      // دسته‌ی اسکرپ: فقط مالک در پیوی
+      if (cq.message && cq.message.chat && cq.message.chat.type === "private" && (await isOwner(env, cq.from.id))) {
+        return handleBatchCallback(env, cq, ctx);
+      }
+      return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+    }
     if (data.startsWith("rv:")) {
       // فهرست بررسی: فقط مالک
       if (cq.message && cq.message.chat && cq.message.chat.type === "private" && (await isOwner(env, cq.from.id))) {
@@ -376,7 +384,7 @@ export default {
           if (event.cron === "* * * * *") {
             // هر دقیقه: پاک‌کردن پیام‌های موقت /metro، بررسی سلامت اسکرپ‌ها و گزارش روزانه.
             // هرکدوم جدا اجرا می‌شه تا خطای یکی، بقیه رو نبره.
-            const tasks = { metro: cleanupMetroMessages, health: checkScrapeHealth, summary: sendDailySummary };
+            const tasks = { metro: cleanupMetroMessages, health: checkScrapeHealth, summary: sendDailySummary, batches: expireBatches };
             const names = Object.keys(tasks);
             const results = await Promise.allSettled(names.map((name) => tasks[name](env)));
             results.forEach((r, i) => {
@@ -386,8 +394,8 @@ export default {
             });
           } else if (event.cron === "30 2 * * *") {
             // ۰۶:۰۰ تهران: پست‌های دوره‌ی خواب یک‌جا
-            const r = await flushPosts(env);
-            if (r && r.sent) await recordEvent(env, "system", "", "delivered", String(r.sent));
+            const r = await prepareBatch(env);
+            if (r && r.prepared) await recordEvent(env, "system", "", "delivered", `batch:${r.prepared}`);
           } else if (event.cron === "30 20 * * *") {
             const backup = await buildBackup(env);
             await sendJsonDocument(env, env.OWNER_ID, "iaut-backup.json", backup, "پشتیبان روزانه");

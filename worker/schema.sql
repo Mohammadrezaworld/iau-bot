@@ -140,6 +140,22 @@ CREATE TABLE IF NOT EXISTS admin_sessions (
   updated_utc INTEGER NOT NULL
 );
 
+-- دسته‌های پست اسکرپ منتظر تأیید مالک. وضعیت: pending · sending · sent · rejected · expired · empty
+CREATE TABLE IF NOT EXISTS scrape_batches (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  state       TEXT NOT NULL,
+  created_utc INTEGER NOT NULL,
+  expires_utc INTEGER NOT NULL
+);
+-- عضویت پست در دسته (post_id یکتاست؛ هر پست فقط یک دسته). unit: کلید بخش ارسال (برای بررسی و retry)
+CREATE TABLE IF NOT EXISTS scrape_batch_items (
+  post_id  INTEGER PRIMARY KEY,
+  batch_id INTEGER NOT NULL,
+  unit     TEXT
+);
+CREATE INDEX IF NOT EXISTS scrape_batch_items_batch ON scrape_batch_items (batch_id);
+CREATE INDEX IF NOT EXISTS scrape_batch_items_unit ON scrape_batch_items (unit);
+
 -- پایه‌گذاری یک‌باره: پست‌های قبل از راه‌اندازی ارسال گروه، علامت ارسال‌شده می‌خورن تا سیل پیام نیاد
 INSERT INTO settings (key, value) SELECT 'baseline_v1', 'pending' WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'baseline_v1');
 UPDATE posts SET sent_at_utc = first_seen_utc WHERE sent_at_utc IS NULL AND EXISTS (SELECT 1 FROM settings WHERE key = 'baseline_v1' AND value = 'pending');
