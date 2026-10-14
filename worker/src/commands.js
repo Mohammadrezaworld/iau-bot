@@ -8,7 +8,7 @@ import { updatesText, flushPosts, scrapeCommand } from "./channels.js";
 import { tg } from "./telegram.js";
 import { faDate } from "./calendar.js";
 import { handleManage, publicContacts, publicResources, publicEvents, MANAGE_HELP } from "./manage.js";
-import { handleMetroDocument, metroInfoText } from "./metro.js";
+import { handleMetroDocument, metroInfoText, handleMetroCommand } from "./metro.js";
 import { keywordCommand } from "./keywords.js";
 import { holidayCommand } from "./holidays.js";
 import { undoLast } from "./undo.js";
@@ -61,6 +61,9 @@ const DM_WELCOME = [
   "/next هفته‌ی بعد",
   "/term فهرست هفته‌های ترم",
   "/left روزهای باقی‌مانده تا پایان کلاس‌ها",
+  "",
+  "جدول مترو",
+  "/metro مبدا و مقصد و سرویس‌های بعدی",
 ].join("\n");
 
 // پیام‌های پیوی کاربر عادی (ادمین‌ها به handleAdminMessage می‌رن). خدمات فقط برای اعضای گروه اصلی.
@@ -76,6 +79,10 @@ export async function handleDmUser(env, msg) {
     return openDmMenu(env, uid, DM_WELCOME, true);
   }
   if (cmd === "/jozve" || cmd === "/menu") return openDmMenu(env, uid);
+  if (cmd === "/metro") {
+    if (!(await dmIsMember(env, uid))) return sendGate(env, chatId, DM_NOT_MEMBER);
+    return handleMetroCommand(env, msg);
+  }
   // /updates در پیوی نیست: برای کاربر لازم نیست وضعیت بررسی کانال‌ها رو بخونه
   if (PUBLIC_CMDS.includes(cmd) && cmd !== "/updates") {
     if (!(await dmIsMember(env, uid))) return sendGate(env, chatId, DM_NOT_MEMBER);
