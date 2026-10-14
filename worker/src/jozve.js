@@ -192,32 +192,14 @@ function topMarkup() {
   ], [{ text: "بستن", callback_data: "j:x" }]);
 }
 
-// /jozve در گروه (ربات دستور رو بعد از پاسخ پاک می‌کنه)
+// /jozve در گروه: منوی گروه حذف شده؛ دستور پاک می‌شه و کاربر به پیوی ربات راهنمایی می‌شه.
+// (تا وقتی منوی شخصی پیوی آماده نشده، این تغییر merge نمی‌شه)
+const GROUP_GUIDE = "جزوه‌ها و نمونه‌سوال‌ها از این به بعد از پیوی ربات گرفته می‌شن. به ربات در پیوی پیام بده.";
 export async function handleJozveCommand(env, msg) {
   const chatId = msg.chat.id;
-  const uid = msg.from.id;
-  if (!(await isAdmin(env, uid))) {
-    const now = nowS();
-    const r = await env.DB.prepare("SELECT COUNT(*) AS n FROM jozve_usage WHERE user_id = ? AND at_utc > ?")
-      .bind(uid, now - RATE_WINDOW).first();
-    if (r.n >= RATE_MAX) {
-      await tryDeleteMessage(env, chatId, msg.message_id);
-      return notifyLimit(env, chatId);
-    }
-    await env.DB.prepare("INSERT INTO jozve_usage (user_id, at_utc) VALUES (?, ?)").bind(uid, now).run();
-    await env.DB.prepare("DELETE FROM jozve_usage WHERE at_utc < ?").bind(now - 3600).run();
-  }
-  // فقط یک منوی فعال در گروه: منوی قبلی و دستورش حذف می‌شن تا منوها کنار هم جمع نشن
-  const prev = await getMenuState(env);
-  if (prev) {
-    if (prev.menu) await tryDeleteMessage(env, chatId, prev.menu);
-    if (prev.cmd) await tryDeleteMessage(env, chatId, prev.cmd);
-  }
-  const sent = await tg(env, "sendMessage", { chat_id: chatId, text: "کدوم رو می‌خوای؟", reply_markup: topMarkup() });
-  // منو و دستور کاربر هر دو بعد از ۶۰ ثانیه با هم پاک می‌شن
+  await tryDeleteMessage(env, chatId, msg.message_id);
+  const sent = await tg(env, "sendMessage", { chat_id: chatId, text: GROUP_GUIDE });
   await rememberMsg(env, chatId, sent.message_id, MENU_TTL);
-  await rememberMsg(env, chatId, msg.message_id, MENU_TTL);
-  await saveMenuState(env, { menu: sent.message_id, cmd: msg.message_id });
 }
 
 // هر فایل یک کلید ثابت داره؛ شناسه‌ی پیامی که توی گروه ساخته شده رو نگه می‌داریم تا دفعه‌ی بعد دوباره کپی نشه
