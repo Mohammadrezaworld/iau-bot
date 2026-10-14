@@ -3,6 +3,7 @@ import { tg, sendMessage } from "./telegram.js";
 import { audit } from "./admin.js";
 import { parseDateInput, normalizeDigits } from "./jalali.js";
 import { faDate } from "./calendar.js";
+import { dbEffect } from "./effects.js";
 
 const nowUtc = () => Math.floor(Date.now() / 1000);
 
@@ -259,12 +260,23 @@ export async function handleCallback(env, cq) {
 
   if (data === "w:ok") {
     const d = JSON.parse(sess.data);
+    // کلید پایدار: همین جلسه‌ی ویزارد (updated_utc هر مرحله رو عوض می‌کنه)؛ تأیید دوباره یا retry ردیف دوم نمی‌سازه
+    const opKey = `wizard:${userId}:${sess.flow}:${sess.updated_utc}:${sess.data}`;
+    let eff;
     if (sess.flow === "event") {
-      await env.DB.prepare("INSERT INTO events (start_date, end_date, title, kind) VALUES (?, ?, ?, ?)").bind(d.start, d.end || d.start, d.title, d.kind).run();
+      eff = await dbEffect(env, opKey, "events",
+        { table: "events", cols: ["start_date", "end_date", "title", "kind"], vals: [d.start, d.end || d.start, d.title, d.kind] }, `event ${d.start} ${d.title}`);
     } else if (sess.flow === "call") {
-      await env.DB.prepare("INSERT INTO contacts (category, name, number, note) VALUES (?, ?, ?, ?)").bind(d.category, d.name, d.number, d.note || "").run();
+      eff = await dbEffect(env, opKey, "contacts",
+        { table: "contacts", cols: ["category", "name", "number", "note"], vals: [d.category, d.name, d.number, d.note || ""] }, `call ${d.category} | ${d.name}`);
     } else {
-      await env.DB.prepare("INSERT INTO resources (category, title, url, note) VALUES (?, ?, ?, ?)").bind(d.category, d.title, d.url, d.note || "").run();
+      eff = await dbEffect(env, opKey, "resources",
+        { table: "resources", cols: ["category", "title", "url", "note"], vals: [d.category, d.title, d.url, d.note || ""] }, `link ${d.category} | ${d.title}`);
+    }
+    if (!eff.created) {
+      await clearSession(env, userId);
+      await answer("قبلاً ثبت شده");
+      return tg(env, "sendMessage", { chat_id: chatId, text: "این مورد قبلاً ثبت شده بود." });
     }
     await audit(env, userId, `${sess.flow}_add`, JSON.stringify(d).slice(0, 300));
     await clearSession(env, userId);

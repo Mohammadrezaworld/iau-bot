@@ -3,6 +3,7 @@ import { audit } from "./admin.js";
 import { escHtml } from "./telegram.js";
 import { faDate, faNum, tehranToday, daysBetween } from "./calendar.js";
 import { parseDateInput, normalizeDigits } from "./jalali.js";
+import { dbEffect } from "./effects.js";
 
 const nowUtc = () => Math.floor(Date.now() / 1000);
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -56,12 +57,16 @@ export async function listEvents(env) {
 }
 
 // پردازش دستورهای مدیریتی. اگه دستور مربوط به این بخش نبود، null برمی‌گردونه.
-export async function handleManage(env, userId, cmd, arg) {
+export async function handleManage(env, userId, cmd, arg, opKey) {
+  // opKey: کلید پایدار این پیام (برای جلوگیری از ثبت دوباره در retry)
+  if (!opKey && ["/call_add", "/link_add", "/event_add"].includes(cmd)) throw new Error("handleManage: opKey لازم است");
   switch (cmd) {
     case "/call_add": {
       const [cat, name, number, note = ""] = parts(arg);
       if (!cat || !name || !number) return "فرمت: /call_add دسته | نام | شماره | یادداشت";
-      await env.DB.prepare("INSERT INTO contacts (category, name, number, note) VALUES (?, ?, ?, ?)").bind(cat, name, number, note).run();
+      const eff = await dbEffect(env, `${opKey}:call_add`, "contacts",
+        { table: "contacts", cols: ["category", "name", "number", "note"], vals: [cat, name, number, note] }, `call_add ${cat} | ${name}`);
+      if (!eff.created) return "این شماره قبلاً ثبت شده بود.";
       await audit(env, userId, "call_add", `${cat} | ${name}`);
       return "شماره ثبت شد.";
     }
@@ -86,7 +91,9 @@ export async function handleManage(env, userId, cmd, arg) {
       const [cat, title, url] = parts(arg);
       if (!cat || !title || !url) return "فرمت: /link_add دسته | عنوان | https://…";
       if (!/^https:\/\/\S+$/.test(url)) return "فقط لینک https قبول می‌شه.";
-      await env.DB.prepare("INSERT INTO resources (category, title, url) VALUES (?, ?, ?)").bind(cat, title, url).run();
+      const eff = await dbEffect(env, `${opKey}:link_add`, "resources",
+        { table: "resources", cols: ["category", "title", "url"], vals: [cat, title, url] }, `link_add ${cat} | ${title}`);
+      if (!eff.created) return "این لینک قبلاً ثبت شده بود.";
       await audit(env, userId, "link_add", title);
       return "لینک ثبت شد.";
     }
@@ -117,7 +124,9 @@ export async function handleManage(env, userId, cmd, arg) {
       const endDate = endParsed || start;
       if (endDate < start) return "تاریخ پایان نباید قبل از شروع باشه.";
       if (!title) return "عنوان رویداد لازمه. مثال: /event_add ۱۴۰۵-۰۷-۲۸ | | میان‌ترم | امتحان";
-      await env.DB.prepare("INSERT INTO events (start_date, end_date, title, kind) VALUES (?, ?, ?, ?)").bind(start, endDate, title, kind).run();
+      const eff = await dbEffect(env, `${opKey}:event_add`, "events",
+        { table: "events", cols: ["start_date", "end_date", "title", "kind"], vals: [start, endDate, title, kind] }, `event_add ${start} ${title}`);
+      if (!eff.created) return "این رویداد قبلاً ثبت شده بود.";
       await audit(env, userId, "event_add", `${start} ${title}`);
       return "رویداد ثبت شد.";
     }
