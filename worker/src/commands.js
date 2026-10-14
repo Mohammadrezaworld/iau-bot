@@ -73,7 +73,7 @@ export async function handleDmUser(env, msg) {
   if (cmd === "/start") {
     if (!(await dmIsMember(env, uid))) return sendGate(env, chatId, `${DM_WELCOME}\n\n${DM_NOT_MEMBER}`);
     // خوش‌آمد و دکمه‌های منو در یک پیام
-    return openDmMenu(env, uid, DM_WELCOME);
+    return openDmMenu(env, uid, DM_WELCOME, true);
   }
   if (cmd === "/jozve" || cmd === "/menu") return openDmMenu(env, uid);
   // /updates در پیوی نیست: برای کاربر لازم نیست وضعیت بررسی کانال‌ها رو بخونه
