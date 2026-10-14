@@ -207,6 +207,10 @@ export async function resolveUpdate(env, id, decision) {
   if (decision === "applied") {
     await env.DB.prepare("UPDATE effects SET state = 'done', last_error = 'owner_applied' WHERE update_id = ? AND state = 'intent'").bind(id).run();
     await env.DB.prepare("UPDATE update_queue SET state = 'done', reason = 'owner_applied', payload = NULL, lease = '' WHERE update_id = ?").bind(id).run();
+    // بخش‌های دسته‌ی اسکرپ که مالک «اعمال شد» گفته، پست‌هاشون ارسال‌شده علامت می‌خوره
+    await env.DB.prepare(
+      "UPDATE posts SET sent_at_utc = ? WHERE sent_at_utc IS NULL AND id IN (SELECT bi.post_id FROM scrape_batch_items bi JOIN effects e ON e.op_key = bi.unit WHERE e.update_id = ?)"
+    ).bind(nowS(), id).run();
     return "ثبت شد: اثر انجام شده و درخواست بسته شد.";
   }
   await env.DB.prepare("UPDATE effects SET state = 'failed', last_error = 'owner_not_applied' WHERE update_id = ? AND state = 'intent'").bind(id).run();

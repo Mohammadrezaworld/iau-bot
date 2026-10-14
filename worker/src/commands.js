@@ -4,7 +4,7 @@ import { isAdmin, isOwner, audit, buildBackup, statusText, logText, getRole } fr
 import { answerPublic, getSetting, sendCachedAnswer } from "./public.js";
 import { parseDateInput, normalizeDigits } from "./jalali.js";
 import { startWizard, handleWizardText, removeList } from "./wizard.js";
-import { updatesText, flushPosts, scrapeCommand } from "./channels.js";
+import { updatesText, scrapeCommand } from "./channels.js";
 import { tg } from "./telegram.js";
 import { faDate } from "./calendar.js";
 import { handleManage, publicContacts, publicResources, publicEvents, MANAGE_HELP } from "./manage.js";
