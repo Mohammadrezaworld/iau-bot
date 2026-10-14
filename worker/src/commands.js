@@ -20,7 +20,7 @@ import { scrapeLogText } from "./monitor.js";
 // دستورهایی که سطح content هم مجازه
 const CONTENT_CMDS = new Set([
   "/start", "/help", "/cancel", "/ok", "/status",
-  "/call", "/links", "/events", "/updates",
+  "/call", "/links", "/events", "/updates", "/menu", "/jozve", "/metro",
   "/call_add", "/call_edit", "/call_remove", "/call_list",
   "/link_add", "/link_edit", "/link_remove", "/link_list",
   "/event_add", "/event_remove", "/event_list",
@@ -168,6 +168,9 @@ export async function handleAdminMessage(env, message) {
   }
 
   if (PUBLIC_CMDS.includes(cmd)) return runPublic(env, chatId, cmd);
+  // ادمین‌ها هم منوی شخصی و جدول مترو رو در پیوی دارن (همون مسیر کاربر عادی)
+  if (cmd === "/menu" || cmd === "/jozve") return openDmMenu(env, userId);
+  if (cmd === "/metro") return handleMetroCommand(env, message);
 
   // افزودن بدون آرگومان: مرحله‌به‌مرحله. حذف بدون آرگومان: لیست با دکمه
   const wizardFlows = { "/event_add": "event", "/call_add": "call", "/link_add": "link" };
