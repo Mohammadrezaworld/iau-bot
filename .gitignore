@@ -2,3 +2,7 @@
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Wrangler local state (local D1 files)
+.wrangler/
+worker/.wrangler/
