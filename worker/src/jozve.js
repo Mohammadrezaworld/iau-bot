@@ -195,18 +195,31 @@ function topMarkup() {
 // /jozve در گروه: منوی گروه حذف شده؛ دستور پاک می‌شه و کاربر به پیوی ربات راهنمایی می‌شه.
 // (تا وقتی منوی شخصی پیوی آماده نشده، این تغییر merge نمی‌شه)
 const GROUP_GUIDE = "این خدمت از این به بعد از پیوی ربات گرفته می‌شه. به ربات در پیوی پیام بده.";
-// دستورهایی که از گروه به پیوی منتقل شدن: پیام کوتاه راهنما، دستور کاربر پاک می‌شه
+// دستورهایی که از گروه به پیوی منتقل شدن: یک راهنمای مشترک برای گروه.
+// اگه راهنما هنوز فعاله، همون پیام می‌مونه و زمانش تمدید میشه؛ دستور کاربر هم پاک می‌شه.
+const GROUP_GUIDE_KEY = "group_guide_msg";
 export async function groupMovedGuide(env, chatId, msgId) {
   await tryDeleteMessage(env, chatId, msgId);
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = ?").bind(GROUP_GUIDE_KEY).first();
+  let st = null;
+  try { st = row && row.value ? JSON.parse(row.value) : null; } catch { st = null; }
+  const now = nowS();
+  if (st && st.chat === chatId && now < st.until) {
+    await rememberMsg(env, chatId, st.msg, MENU_TTL);
+    await env.DB.prepare(
+      "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    ).bind(GROUP_GUIDE_KEY, JSON.stringify({ ...st, until: now + MENU_TTL })).run();
+    return;
+  }
   const sent = await tg(env, "sendMessage", { chat_id: chatId, text: GROUP_GUIDE });
   await rememberMsg(env, chatId, sent.message_id, MENU_TTL);
+  await env.DB.prepare(
+    "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  ).bind(GROUP_GUIDE_KEY, JSON.stringify({ chat: chatId, msg: sent.message_id, until: now + MENU_TTL })).run();
 }
 
 export async function handleJozveCommand(env, msg) {
-  const chatId = msg.chat.id;
-  await tryDeleteMessage(env, chatId, msg.message_id);
-  const sent = await tg(env, "sendMessage", { chat_id: chatId, text: GROUP_GUIDE });
-  await rememberMsg(env, chatId, sent.message_id, MENU_TTL);
+  return groupMovedGuide(env, msg.chat.id, msg.message_id);
 }
 
 // هر فایل یک کلید ثابت داره؛ شناسه‌ی پیامی که توی گروه ساخته شده رو نگه می‌داریم تا دفعه‌ی بعد دوباره کپی نشه
