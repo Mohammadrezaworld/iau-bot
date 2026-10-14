@@ -27,9 +27,20 @@ export async function tg(env, method, payload) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
   });
-  const data = await res.json().catch(() => ({ ok: false }));
+  let data;
+  try {
+    data = await res.json();
+  } catch {
+    // پاسخ خوانده نشد: معلوم نیست تلگرام کار رو انجام داده یا نه (مبهم)
+    throw new Error(`telegram ${method} unreadable response (${res.status})`);
+  }
   // توضیح تلگرام (مثلاً chat not found) کمک می‌کنه علت خطا معلوم بشه؛ توکن هیچ‌وقت توش نیست
-  if (!data.ok) throw new Error(`telegram ${method} failed (${data.error_code || res.status}): ${String(data.description || "").slice(0, 200)}`);
+  if (!data.ok) {
+    const err = new Error(`telegram ${method} failed (${data.error_code || res.status}): ${String(data.description || "").slice(0, 200)}`);
+    // refused: تلگرام صریحاً رد کرده و کاری انجام نشده. خطاهای ۵xx مبهم حساب می‌شن.
+    err.refused = res.status < 500;
+    throw err;
+  }
   return data.result;
 }
 
