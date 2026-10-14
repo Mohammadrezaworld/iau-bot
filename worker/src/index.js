@@ -9,11 +9,12 @@ import { handleKeywordCallback } from "./keywords.js";
 import { handleHolidayCallback } from "./holidays.js";
 import { handleJozvePost, handleJozveCommand, handleJozveCallback, handleJozveRemoveCallback, handleDmCallback, groupMovedGuide, dmIsMember, DM_NOT_MEMBER } from "./jozve.js";
 import { flushPosts, cleanPostText, inTehranQuietHours } from "./channels.js";
-import { isAdmin } from "./admin.js";
+import { isAdmin, isOwner } from "./admin.js";
 import { buildBackup } from "./admin.js";
 import { sendJsonDocument, tg } from "./telegram.js";
 import { handleMetroCallback, handleMetroUploadCallback, cleanupMetroMessages } from "./metro.js";
 import { handleScrapeReport, recordEvent, reportError, checkScrapeHealth, sendDailySummary, redact } from "./monitor.js";
+import { claimUpdate, markOutcome, markDoneWithRetry, notifyNeedsReview, retryUpdate, resolveUpdate, listReview, describeReviewRow, MAX_AUTO_ATTEMPTS } from "./updates.js";
 
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
@@ -178,16 +179,23 @@ async function handleGroupMessage(env, msg) {
 }
 
 // پردازش یک update: هر خطایی بیرون پرت می‌شه تا handleTelegramWebhook تصمیم بگیره
-async function dispatchUpdate(env, update) {
+async function dispatchUpdate(env, update, ctx = null) {
   if (update && update.callback_query) {
     const cq = update.callback_query;
     const data = cq.data || "";
+    if (data.startsWith("rv:")) {
+      // فهرست بررسی: فقط مالک
+      if (cq.message && cq.message.chat && cq.message.chat.type === "private" && (await isOwner(env, cq.from.id))) {
+        return handleReviewCallback(env, cq);
+      }
+      return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+    }
     if (!cq.message || !cq.message.chat) return;
     if (data.startsWith("d:") && cq.message.chat.type === "private") {
       // منوی شخصی جزوه‌ها در پیوی (کاربر عادی و ادمین)
       await handleDmCallback(env, cq);
     } else if (data.startsWith("j:") || data.startsWith("jk:")) {
-      if (await isOurGroup(env, cq.message.chat.id)) await handleJozveCallback(env, cq);
+      if (await isOurGroup(env, cq.message.chat.id)) await handleJozveCallback(env, cq, ctx);
     } else if (data.startsWith("m:")) {
       // منوی /metro: در پیوی (کاربر عضو) یا گروه قدیمی؛ فقط برای درخواست‌کننده (داخل handler چک می‌شه)
       if (cq.message.chat.type === "private") {
@@ -217,6 +225,9 @@ async function dispatchUpdate(env, update) {
   const msg = update && update.message;
   if (msg && msg.chat) {
     if (msg.chat.type === "private") {
+      if (msg.from && (await isOwner(env, msg.from.id)) && ["/review", "/retry_update", "/resolve_update"].includes(parseCmd(msg.text).cmd)) {
+        return handleOwnerCommand(env, msg);
+      }
       // کاربر عادی: فقط /start و /jozve؛ بقیه‌ی پیام‌ها بی‌صدا نادیده گرفته می‌شن
       if (!(await handleDmUser(env, msg))) await handleAdminMessage(env, msg);
     } else if (await isOurGroup(env, msg.chat.id)) {
@@ -225,39 +236,11 @@ async function dispatchUpdate(env, update) {
   }
 }
 
-// صف idempotent: هر update_id فقط یک بار موفق پردازش می‌شه.
-// حالت‌ها: processing (در حال پردازش) · done (موفق) · failed (شکست؛ دوباره می‌شه امتحان کرد)
-const MAX_UPDATE_ATTEMPTS = 3;
-const STALE_PROCESSING_S = 90;
-const PROCESSED_KEEP_S = 7 * 86400;
-
-async function claimUpdate(env, id) {
-  const now = Math.floor(Date.now() / 1000);
-  await env.DB.prepare("DELETE FROM processed_updates WHERE state = 'done' AND at_utc < ?").bind(now - PROCESSED_KEEP_S).run();
-  const ins = await env.DB.prepare(
-    "INSERT OR IGNORE INTO processed_updates (update_id, state, attempts, at_utc) VALUES (?, 'processing', 1, ?)"
-  ).bind(id, now).run();
-  if (ins.meta.changes === 1) return "claimed";
-  const row = await env.DB.prepare("SELECT state, attempts, at_utc FROM processed_updates WHERE update_id = ?").bind(id).first();
-  if (!row) return "busy";
-  if (row.state === "done") return "skip";
-  if (row.attempts >= MAX_UPDATE_ATTEMPTS) {
-    console.error("update_dropped", id);
-    return "skip";
-  }
-  if (row.state === "processing" && now - row.at_utc < STALE_PROCESSING_S) return "busy";
-  // بازپردازش: فقط اگه وضعیت و تعداد تلاش هنوز همون چیزی باشه که خوندیم (جلوگیری از دو پردازش هم‌زمان)
-  const upd = await env.DB.prepare(
-    "UPDATE processed_updates SET state = 'processing', attempts = attempts + 1, at_utc = ? WHERE update_id = ? AND state = ? AND attempts = ?"
-  ).bind(now, id, row.state, row.attempts).run();
-  return upd.meta.changes === 1 ? "claimed" : "busy";
-}
-
-async function markUpdate(env, id, state) {
-  await env.DB.prepare("UPDATE processed_updates SET state = ?, at_utc = ? WHERE update_id = ?")
-    .bind(state, Math.floor(Date.now() / 1000), id).run();
-}
-
+// صف update (ماژول updates.js) و اثرها (ماژول effects.js)
+// - تضمین: DB effects با کلید پایدار تکرار نمی‌شن؛ ارسال تلگرام حداکثر یک تلاش خودکار دارد و نتیجه‌ی مبهم به مالک می‌رسه (exactly-once نیست).
+// - اثر نامشخص (AmbiguousError) → needs_review بدون تلاش خودکار؛ تصمیم با مالک (/resolve_update)
+// - lease از دست رفته (LeaseLostError) → هیچ نوشتنی نمی‌کنه و ۲۰۰ برمی‌گردونه
+// - ۲۰۰ بعد از موفقیت فقط وقتی برمی‌گرده که تلگرام تکرار نکنه؛ اگه ثبت done شکست بخوره، ردیف در /review دیده می‌شه
 async function handleTelegramWebhook(request, env) {
   // Telegram رمز secret_token رو توی هدر می‌فرسته؛ اگه نبود، درخواست جعلیه
   const expected = await webhookSecret(env);
@@ -266,29 +249,104 @@ async function handleTelegramWebhook(request, env) {
   }
 
   const update = await request.json().catch(() => null);
-  // ساعت سکوت گروه: هیچ پاسخ یا واکنشی به پیام/دکمه‌ی گروه داده نمی‌شه (دستورهای قدیمی هم)
+  // ساعت سکوت گروه: هیچ پاسخ یا واکنشی به پیام/دکمه‌ی گروه داده نمی‌شه (رفتار فعلی؛ تغییر نکرده)
   if (update && (await groupSilenced(env, update))) return new Response("ok", { status: 200 });
 
   const id = update && Number.isSafeInteger(update.update_id) ? update.update_id : null;
+  let ctx = null;
+  let attempts = 1;
   if (id !== null) {
-    const claim = await claimUpdate(env, id);
-    // busy: یه پردازش دیگه همین update رو داره؛ ۵۰۰ تا تلگرام بعداً دوباره بفرسته
-    if (claim === "busy") return new Response("busy", { status: 500 });
-    if (claim === "skip") return new Response("ok", { status: 200 });
-  }
-  try {
-    await dispatchUpdate(env, update);
-  } catch (err) {
-    console.error("webhook_error", err && err.message ? err.message : "unknown");
-    if (id !== null) {
-      // شکست: علامت failed، و ۵۰۰ تا تلگرام دوباره بفرسته (تا سقف تلاش‌ها)
-      await markUpdate(env, id, "failed");
-      return new Response("retry", { status: 500 });
+    // اگه خطای DB اینجا پرت بشه، هنوز هیچ کاری انجام نشده، پس ۵۰۰ امنه و تلگرام دوباره می‌فرسته
+    const claim = await claimUpdate(env, id, JSON.stringify(update));
+    if (claim.status === "busy") return new Response("busy", { status: 500 });
+    if (claim.status === "skip") return new Response("ok", { status: 200 });
+    if (claim.status === "exhausted") {
+      console.error("update_needs_review", id);
+      await notifyNeedsReview(env, id, update, "تلاش‌های خودکار تمام شد", "exhausted");
+      return new Response("ok", { status: 200 });
     }
-    return new Response("ok", { status: 200 });
+    ctx = { updateId: id, lease: claim.lease };
+    attempts = claim.attempts;
   }
-  if (id !== null) await markUpdate(env, id, "done");
+
+  try {
+    await dispatchUpdate(env, update, ctx);
+  } catch (err) {
+    if (err && err.name === "LeaseLostError") {
+      // اجرای دیگه‌ای مالک شده؛ این اجرا چیزی نمی‌نویسه
+      console.error("lease_lost_stop", id);
+      return new Response("ok", { status: 200 });
+    }
+    const msg = err && err.message ? err.message : "unknown";
+    console.error("webhook_error", msg);
+    if (id === null) return new Response("ok", { status: 200 });
+    if (err && err.name === "AmbiguousError") {
+      // نتیجه‌ی یک اثر نامشخصه: تلاش خودکار نمی‌کنیم
+      await markOutcome(env, id, ctx.lease, "needs_review", msg, "ambiguous").catch(() => console.error("mark_outcome_failed", id));
+      await notifyNeedsReview(env, id, update, msg, "ambiguous");
+      return new Response("ok", { status: 200 });
+    }
+    // شکست عادی: با اثرهای ثبت‌شده، تلاش دوباره امنه. تلاش آخر → needs_review
+    const last = attempts >= MAX_AUTO_ATTEMPTS;
+    try {
+      await markOutcome(env, id, ctx.lease, last ? "needs_review" : "failed", msg, last ? "exhausted" : "error");
+    } catch (dbErr) {
+      console.error("mark_outcome_failed", id);
+    }
+    if (last) {
+      await notifyNeedsReview(env, id, update, msg, "exhausted");
+      return new Response("ok", { status: 200 });
+    }
+    return new Response("retry", { status: 500 });
+  }
+  if (id !== null) {
+    if (!(await markDoneWithRetry(env, id, ctx.lease))) console.error("done_write_pending", id);
+  }
   return new Response("ok", { status: 200 });
+}
+
+// دستورهای مالک در پیوی: /review (فهرست)، /retry_update <id>، /resolve_update <id> applied|not_applied
+async function handleOwnerCommand(env, msg) {
+  const { cmd, arg } = parseCmd(msg.text);
+  const chatId = msg.chat.id;
+  if (cmd === "/review") {
+    const rows = await listReview(env);
+    if (!rows.length) return tg(env, "sendMessage", { chat_id: chatId, text: "موردی نیازمند بررسی نیست." });
+    const text = ["موارد نیازمند بررسی:", "", ...rows.map(describeReviewRow)].join("\n\n");
+    const inline_keyboard = rows.map((r) => [
+      { text: "تلاش مجدد", callback_data: `rv:r:${r.update_id}` },
+      { text: "اعمال شد", callback_data: `rv:a:${r.update_id}` },
+      { text: "انجام نشد", callback_data: `rv:n:${r.update_id}` },
+    ]);
+    return tg(env, "sendMessage", { chat_id: chatId, text, reply_markup: { inline_keyboard }, disable_web_page_preview: true });
+  }
+  if (cmd === "/retry_update") {
+    const id = Number(arg.trim());
+    const text = Number.isSafeInteger(id) && id > 0 ? await retryUpdate(env, id, dispatchUpdate) : "فرمت: /retry_update <شناسه>";
+    return tg(env, "sendMessage", { chat_id: chatId, text });
+  }
+  if (cmd === "/resolve_update") {
+    const [rawId, decision] = arg.trim().split(/\s+/);
+    const id = Number(rawId);
+    if (!Number.isSafeInteger(id) || id <= 0 || !["applied", "not_applied"].includes(decision)) {
+      return tg(env, "sendMessage", { chat_id: chatId, text: "فرمت: /resolve_update <شناسه> applied|not_applied\napplied: اثر انجام شده · not_applied: اثری نبوده (بعدش می‌شه دوباره اجرا کرد)" });
+    }
+    return tg(env, "sendMessage", { chat_id: chatId, text: await resolveUpdate(env, id, decision) });
+  }
+  return false;
+}
+
+// دکمه‌های فهرست /review (فقط مالک)
+async function handleReviewCallback(env, cq) {
+  const [, action, rawId] = String(cq.data).split(":");
+  const id = Number(rawId);
+  let text;
+  if (!Number.isSafeInteger(id) || id <= 0) text = "نامعتبر";
+  else if (action === "r") text = await retryUpdate(env, id, dispatchUpdate);
+  else if (action === "a") text = await resolveUpdate(env, id, "applied");
+  else if (action === "n") text = await resolveUpdate(env, id, "not_applied");
+  else text = "نامعتبر";
+  return tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: String(text).slice(0, 190), show_alert: true });
 }
 
 export default {
