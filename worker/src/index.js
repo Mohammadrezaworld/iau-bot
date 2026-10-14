@@ -9,11 +9,12 @@ import { handleKeywordCallback } from "./keywords.js";
 import { handleHolidayCallback } from "./holidays.js";
 import { handleJozvePost, handleJozveCommand, handleJozveCallback, handleJozveRemoveCallback, handleDmCallback, groupMovedGuide, dmIsMember, DM_NOT_MEMBER } from "./jozve.js";
 import { flushPosts, cleanPostText, inTehranQuietHours } from "./channels.js";
-import { isAdmin } from "./admin.js";
+import { isAdmin, isOwner } from "./admin.js";
 import { buildBackup } from "./admin.js";
 import { sendJsonDocument, tg } from "./telegram.js";
 import { handleMetroCallback, handleMetroUploadCallback, cleanupMetroMessages } from "./metro.js";
 import { handleScrapeReport, recordEvent, reportError, checkScrapeHealth, sendDailySummary, redact } from "./monitor.js";
+import { claimUpdate, markOutcome, notifyNeedsReview, retryUpdate, MAX_AUTO_ATTEMPTS } from "./updates.js";
 
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
@@ -217,6 +218,9 @@ async function dispatchUpdate(env, update) {
   const msg = update && update.message;
   if (msg && msg.chat) {
     if (msg.chat.type === "private") {
+      if (msg.from && parseCmd(msg.text).cmd === "/retry_update" && (await isOwner(env, msg.from.id))) {
+        return handleRetryUpdateCommand(env, msg, parseCmd(msg.text).arg);
+      }
       // کاربر عادی: فقط /start و /jozve؛ بقیه‌ی پیام‌ها بی‌صدا نادیده گرفته می‌شن
       if (!(await handleDmUser(env, msg))) await handleAdminMessage(env, msg);
     } else if (await isOurGroup(env, msg.chat.id)) {
@@ -225,39 +229,9 @@ async function dispatchUpdate(env, update) {
   }
 }
 
-// صف idempotent: هر update_id فقط یک بار موفق پردازش می‌شه.
-// حالت‌ها: processing (در حال پردازش) · done (موفق) · failed (شکست؛ دوباره می‌شه امتحان کرد)
-const MAX_UPDATE_ATTEMPTS = 3;
-const STALE_PROCESSING_S = 90;
-const PROCESSED_KEEP_S = 7 * 86400;
-
-async function claimUpdate(env, id) {
-  const now = Math.floor(Date.now() / 1000);
-  await env.DB.prepare("DELETE FROM processed_updates WHERE state = 'done' AND at_utc < ?").bind(now - PROCESSED_KEEP_S).run();
-  const ins = await env.DB.prepare(
-    "INSERT OR IGNORE INTO processed_updates (update_id, state, attempts, at_utc) VALUES (?, 'processing', 1, ?)"
-  ).bind(id, now).run();
-  if (ins.meta.changes === 1) return "claimed";
-  const row = await env.DB.prepare("SELECT state, attempts, at_utc FROM processed_updates WHERE update_id = ?").bind(id).first();
-  if (!row) return "busy";
-  if (row.state === "done") return "skip";
-  if (row.attempts >= MAX_UPDATE_ATTEMPTS) {
-    console.error("update_dropped", id);
-    return "skip";
-  }
-  if (row.state === "processing" && now - row.at_utc < STALE_PROCESSING_S) return "busy";
-  // بازپردازش: فقط اگه وضعیت و تعداد تلاش هنوز همون چیزی باشه که خوندیم (جلوگیری از دو پردازش هم‌زمان)
-  const upd = await env.DB.prepare(
-    "UPDATE processed_updates SET state = 'processing', attempts = attempts + 1, at_utc = ? WHERE update_id = ? AND state = ? AND attempts = ?"
-  ).bind(now, id, row.state, row.attempts).run();
-  return upd.meta.changes === 1 ? "claimed" : "busy";
-}
-
-async function markUpdate(env, id, state) {
-  await env.DB.prepare("UPDATE processed_updates SET state = ?, at_utc = ? WHERE update_id = ?")
-    .bind(state, Math.floor(Date.now() / 1000), id).run();
-}
-
+// صف update (ماژول updates.js): هر update_id فقط یک بار موفق پردازش می‌شه؛ شکست‌ها گم نمی‌شن.
+// busy تلاش خودکار رو مصرف نمی‌کنه؛ نتیجه‌ی اجرای قدیمی (lease عوض‌شده) روی وضعیت جدید اثر نمی‌ذاره.
+// ثبت وضعیت یا اطلاع‌رسانی خطا هیچ‌وقت باعث پردازش دوباره‌ی کار موفق نمی‌شه.
 async function handleTelegramWebhook(request, env) {
   // Telegram رمز secret_token رو توی هدر می‌فرسته؛ اگه نبود، درخواست جعلیه
   const expected = await webhookSecret(env);
@@ -270,25 +244,59 @@ async function handleTelegramWebhook(request, env) {
   if (update && (await groupSilenced(env, update))) return new Response("ok", { status: 200 });
 
   const id = update && Number.isSafeInteger(update.update_id) ? update.update_id : null;
+  let lease = null;
+  let attempts = 1;
   if (id !== null) {
-    const claim = await claimUpdate(env, id);
-    // busy: یه پردازش دیگه همین update رو داره؛ ۵۰۰ تا تلگرام بعداً دوباره بفرسته
-    if (claim === "busy") return new Response("busy", { status: 500 });
-    if (claim === "skip") return new Response("ok", { status: 200 });
+    // اگه خطای DB اینجا پرت بشه، هنوز هیچ کاری انجام نشده، پس ۵۰۰ امنه و تلگرام دوباره می‌فرسته
+    const claim = await claimUpdate(env, id, JSON.stringify(update));
+    if (claim.status === "busy") return new Response("busy", { status: 500 });
+    if (claim.status === "skip") return new Response("ok", { status: 200 });
+    if (claim.status === "exhausted") {
+      console.error("update_needs_review", id);
+      await notifyNeedsReview(env, id, update, "تلاش‌های خودکار تمام شد");
+      return new Response("ok", { status: 200 });
+    }
+    lease = claim.lease;
+    attempts = claim.attempts;
   }
+
   try {
     await dispatchUpdate(env, update);
   } catch (err) {
-    console.error("webhook_error", err && err.message ? err.message : "unknown");
-    if (id !== null) {
-      // شکست: علامت failed، و ۵۰۰ تا تلگرام دوباره بفرسته (تا سقف تلاش‌ها)
-      await markUpdate(env, id, "failed");
-      return new Response("retry", { status: 500 });
+    const msg = err && err.message ? err.message : "unknown";
+    console.error("webhook_error", msg);
+    if (id === null) return new Response("ok", { status: 200 });
+    // تلاش آخر: needs_review و اطلاع به مالک (بدون ۵۰۰، تا تلگرام بی‌نهایت تکرار نکنه)
+    const last = attempts >= MAX_AUTO_ATTEMPTS;
+    try {
+      await markOutcome(env, id, lease, last ? "needs_review" : "failed", msg);
+    } catch (dbErr) {
+      console.error("mark_outcome_failed", id);
     }
-    return new Response("ok", { status: 200 });
+    if (last) {
+      await notifyNeedsReview(env, id, update, msg);
+      return new Response("ok", { status: 200 });
+    }
+    return new Response("retry", { status: 500 });
   }
-  if (id !== null) await markUpdate(env, id, "done");
+  // موفق: ثبت done. اگه این هم شکست بخوره، ۲۰۰ برمی‌گردونیم؛ تلگرام تکرار نمی‌کنه و کار دوباره انجام نمی‌شه.
+  if (id !== null) {
+    try {
+      await markOutcome(env, id, lease, "done");
+    } catch (err) {
+      console.error("mark_done_failed", id);
+    }
+  }
   return new Response("ok", { status: 200 });
+}
+
+// /retry_update <id>: فقط مالک؛ تلاش مجدد کنترل‌شده برای درخواست‌های failed یا needs_review
+async function handleRetryUpdateCommand(env, msg, arg) {
+  const id = Number(arg.trim());
+  const text = Number.isSafeInteger(id) && id > 0
+    ? await retryUpdate(env, id, dispatchUpdate)
+    : "فرمت: /retry_update <شناسه>";
+  await tg(env, "sendMessage", { chat_id: msg.chat.id, text });
 }
 
 export default {

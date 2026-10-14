@@ -250,10 +250,14 @@ INSERT OR IGNORE INTO course_categories (course, category) VALUES
   ('تفسیر موضوعی نهج البلاغه', 'معارف');
 
 -- صف idempotent webhook: هر update_id فقط یک بار موفق پردازش می‌شه (processing · done · failed)
-CREATE TABLE IF NOT EXISTS processed_updates (
-  update_id INTEGER PRIMARY KEY,
-  state     TEXT NOT NULL,
-  attempts  INTEGER NOT NULL DEFAULT 1,
-  at_utc    INTEGER NOT NULL
+CREATE TABLE IF NOT EXISTS update_queue (
+  update_id  INTEGER PRIMARY KEY,
+  state      TEXT NOT NULL,
+  attempts   INTEGER NOT NULL DEFAULT 1,
+  lease      TEXT NOT NULL DEFAULT '',
+  payload    TEXT,
+  last_error TEXT NOT NULL DEFAULT '',
+  at_utc     INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS processed_updates_at ON processed_updates (at_utc);
+CREATE INDEX IF NOT EXISTS update_queue_at ON update_queue (at_utc);
+CREATE INDEX IF NOT EXISTS update_queue_state ON update_queue (state);
