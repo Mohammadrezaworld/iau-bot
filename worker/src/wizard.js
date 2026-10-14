@@ -89,7 +89,8 @@ async function askStep(env, chatId, flow, step) {
 }
 
 export async function startWizard(env, userId, chatId, flow) {
-  await saveSession(env, userId, flow, 0, {});
+  // شناسه‌ی یکتای جلسه از زمان شروع: retry همون جلسه همون کلید رو داره، جلسه‌ی مستقل کلید جدا
+  await saveSession(env, userId, flow, 0, { _sid: `${Date.now()}-${crypto.randomUUID()}` });
   return askStep(env, chatId, flow, 0);
 }
 
@@ -260,8 +261,15 @@ export async function handleCallback(env, cq) {
 
   if (data === "w:ok") {
     const d = JSON.parse(sess.data);
-    // کلید پایدار: همین جلسه‌ی ویزارد (updated_utc هر مرحله رو عوض می‌کنه)؛ تأیید دوباره یا retry ردیف دوم نمی‌سازه
-    const opKey = `wizard:${userId}:${sess.flow}:${sess.updated_utc}:${sess.data}`;
+    const { _sid, ...fields } = d;
+    // جلسه‌ی قدیمی (قبل از شناسه): کلید پایدار نداره؛ بدون ثبت، دوباره شروع کنه
+    if (!_sid) {
+      await clearSession(env, userId);
+      await answer("این جلسه قدیمیه");
+      return tg(env, "sendMessage", { chat_id: chatId, text: "این جلسه قدیمی شده؛ دوباره از اول شروع کن." });
+    }
+    // کلید پایدار: شناسه‌ی جلسه. retry همون جلسه همون کلید؛ دو جلسه‌ی مستقل با داده‌ی یکسان کلید متفاوت دارن
+    const opKey = `wizard:${userId}:${sess.flow}:${_sid}`;
     let eff;
     if (sess.flow === "event") {
       eff = await dbEffect(env, opKey, "events",
@@ -278,7 +286,7 @@ export async function handleCallback(env, cq) {
       await answer("قبلاً ثبت شده");
       return tg(env, "sendMessage", { chat_id: chatId, text: "این مورد قبلاً ثبت شده بود." });
     }
-    await audit(env, userId, `${sess.flow}_add`, JSON.stringify(d).slice(0, 300));
+    await audit(env, userId, `${sess.flow}_add`, JSON.stringify(fields).slice(0, 300));
     await clearSession(env, userId);
     await answer("ثبت شد");
     return tg(env, "sendMessage", { chat_id: chatId, text: "ثبت شد." });
