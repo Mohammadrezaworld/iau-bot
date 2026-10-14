@@ -3,7 +3,7 @@ name: scrape-telegram
 on:
   # هر ۲ ساعت یک بار (UTC)؛ ساعت سکوت (۰۲ تا ۰۶ تهران) داخل اسکریپت رد می‌شه
   schedule:
-    - cron: "40 */2 * * *"
+    - cron: "40 2-20/2 * * *"  # UTC: اجرای ۲۲ و ۰ UTC (۰۲ و ۰۴ تهران ساعت سکوت) حذف شد
   workflow_dispatch:
 
 jobs:
