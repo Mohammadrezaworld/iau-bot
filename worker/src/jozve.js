@@ -638,12 +638,36 @@ export async function openDmMenu(env, uid, text = DM_MENU_PROMPT, host = false) 
 }
 
 // کلیک روی منوی پیوی: فقط صاحب منو و فقط اگه هنوز عضو گروه باشه
+// سهمیه‌ی کلیک هر کاربر در منوی پیوی: یک کلیک در ثانیه، با تحمل ۳ کلیک پشت‌سرهم
+const DM_CLICK_BURST = 3;
+const dmClickKey = (uid) => `dm_clicks:${uid}`;
+async function takeDmClick(env, uid) {
+  const now = Date.now();
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = ?").bind(dmClickKey(uid)).first();
+  let b = null;
+  try { b = row && row.value ? JSON.parse(row.value) : null; } catch { b = null; }
+  const tokens = Math.min(DM_CLICK_BURST, b ? b.t + (now - b.at) / 1000 : DM_CLICK_BURST);
+  if (tokens < 1) {
+    await env.DB.prepare(
+      "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    ).bind(dmClickKey(uid), JSON.stringify({ t: tokens, at: now })).run();
+    return false;
+  }
+  await env.DB.prepare(
+    "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  ).bind(dmClickKey(uid), JSON.stringify({ t: tokens - 1, at: now })).run();
+  return true;
+}
+
 export async function handleDmCallback(env, cq) {
   const chatId = cq.message.chat.id;
   const msgId = cq.message.message_id;
   const uid = cq.from.id;
   const alert = (text) => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text, show_alert: true });
   if (String(uid) !== String(chatId)) return alert(DM_NOT_OWNER);
+  if (!(await takeDmClick(env, uid))) {
+    return tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: "لطفاً کمی صبر کن." });
+  }
   const state = await getDmMenu(env, uid);
   if (!state || state.msg !== msgId || nowS() > state.created + DM_MAX_LIFE) {
     await tryDeleteMessage(env, chatId, msgId);
