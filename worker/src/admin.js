@@ -21,7 +21,11 @@ export async function audit(env, actorId, action, detail = "") {
 }
 
 export async function buildBackup(env) {
-  const tables = ["settings", "admins", "holidays", "links", "phones", "audit_log"];
+  // جدول‌های ماندگار. (نام‌های قبلی links و phones وجود نداشتن و پشتیبان همیشه خطا می‌داد)
+  const tables = [
+    "settings", "admins", "admin_roles", "holidays", "events", "metro_versions",
+    "resources", "contacts", "course_categories", "jozve_files", "exam_files", "audit_log",
+  ];
   const out = { created_utc: nowUtc() };
   for (const t of tables) {
     const { results } = await env.DB.prepare(`SELECT * FROM ${t}`).all();
