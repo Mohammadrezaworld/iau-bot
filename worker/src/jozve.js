@@ -194,7 +194,14 @@ function topMarkup() {
 
 // /jozve در گروه: منوی گروه حذف شده؛ دستور پاک می‌شه و کاربر به پیوی ربات راهنمایی می‌شه.
 // (تا وقتی منوی شخصی پیوی آماده نشده، این تغییر merge نمی‌شه)
-const GROUP_GUIDE = "جزوه‌ها و نمونه‌سوال‌ها از این به بعد از پیوی ربات گرفته می‌شن. به ربات در پیوی پیام بده.";
+const GROUP_GUIDE = "این خدمت از این به بعد از پیوی ربات گرفته می‌شه. به ربات در پیوی پیام بده.";
+// دستورهایی که از گروه به پیوی منتقل شدن: پیام کوتاه راهنما، دستور کاربر پاک می‌شه
+export async function groupMovedGuide(env, chatId, msgId) {
+  await tryDeleteMessage(env, chatId, msgId);
+  const sent = await tg(env, "sendMessage", { chat_id: chatId, text: GROUP_GUIDE });
+  await rememberMsg(env, chatId, sent.message_id, MENU_TTL);
+}
+
 export async function handleJozveCommand(env, msg) {
   const chatId = msg.chat.id;
   await tryDeleteMessage(env, chatId, msg.message_id);
