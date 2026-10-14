@@ -1,13 +1,13 @@
 // Worker: webhook تلگرام، دریافت پست‌های اسکرپ‌شده (/ingest)، پشتیبان روزانه.
 import { webhookSecret, tryDeleteMessage } from "./telegram.js";
-import { handleAdminMessage, parseCmd, PUBLIC_CMDS, runPublic } from "./commands.js";
+import { handleAdminMessage, handleDmUser, parseCmd, PUBLIC_CMDS, runPublic } from "./commands.js";
 import { getSetting } from "./public.js";
 import { tehranToday } from "./calendar.js";
 import { sendReminders } from "./reminders.js";
 import { handleCallback } from "./wizard.js";
 import { handleKeywordCallback } from "./keywords.js";
 import { handleHolidayCallback } from "./holidays.js";
-import { handleJozvePost, handleJozveCommand, handleJozveCallback, handleJozveRemoveCallback, handleDmMessage, handleDmCallback } from "./jozve.js";
+import { handleJozvePost, handleJozveCommand, handleJozveCallback, handleJozveRemoveCallback, handleDmCallback } from "./jozve.js";
 import { flushPosts, cleanPostText, inTehranQuietHours } from "./channels.js";
 import { isAdmin } from "./admin.js";
 import { buildBackup } from "./admin.js";
@@ -217,7 +217,7 @@ async function handleTelegramWebhook(request, env) {
     if (msg && msg.chat) {
       if (msg.chat.type === "private") {
         // کاربر عادی: فقط /start و /jozve؛ بقیه‌ی پیام‌ها بی‌صدا نادیده گرفته می‌شن
-        if (!(await handleDmMessage(env, msg))) await handleAdminMessage(env, msg);
+        if (!(await handleDmUser(env, msg))) await handleAdminMessage(env, msg);
       } else if (await isOurGroup(env, msg.chat.id)) {
         await handleGroupMessage(env, msg);
       }
