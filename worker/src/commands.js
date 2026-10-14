@@ -14,7 +14,7 @@ import { holidayCommand } from "./holidays.js";
 import { undoLast } from "./undo.js";
 import { setQuietCommand } from "./channels.js";
 import { editList } from "./wizard.js";
-import { jozveListText, jozveRemoveList, jozveCategoryCommand, openDmMenu, dmIsMember, DM_NOT_MEMBER } from "./jozve.js";
+import { jozveListText, jozveRemoveList, jozveCategoryCommand, openDmMenu, dmIsMember, sendGate, DM_NOT_MEMBER } from "./jozve.js";
 import { scrapeLogText } from "./monitor.js";
 
 // دستورهایی که سطح content هم مجازه
@@ -45,7 +45,7 @@ export async function runPublic(env, chatId, cmd) {
 }
 
 const DM_WELCOME = [
-  "سلام و خوش اومدی.",
+  "سلام، خوش اومدی.",
   "این ربات خدمات گروه رو اینجا، در پیوی، ارائه می‌ده تا گروه شلوغ نشه.",
   "",
   "جزوه‌ها و نمونه‌سوال‌ها",
@@ -55,7 +55,6 @@ const DM_WELCOME = [
   "/call شماره‌های مفید",
   "/links لینک‌های مفید",
   "/events رویدادهای ترم",
-  "/updates آخرین به‌روزرسانی کانال‌ها",
   "",
   "تقویم ترم:",
   "/week هفته‌ی جاری (زوج یا فرد)",
@@ -72,13 +71,14 @@ export async function handleDmUser(env, msg) {
   const uid = msg.from.id;
   const { cmd } = parseCmd(msg.text);
   if (cmd === "/start") {
-    if (!(await dmIsMember(env, uid))) return sendMessage(env, chatId, `${DM_WELCOME}\n\n${DM_NOT_MEMBER}`);
+    if (!(await dmIsMember(env, uid))) return sendGate(env, chatId, `${DM_WELCOME}\n\n${DM_NOT_MEMBER}`);
     await sendMessage(env, chatId, DM_WELCOME);
     return openDmMenu(env, uid);
   }
   if (cmd === "/jozve") return openDmMenu(env, uid);
-  if (PUBLIC_CMDS.includes(cmd)) {
-    if (!(await dmIsMember(env, uid))) return sendMessage(env, chatId, DM_NOT_MEMBER);
+  // /updates در پیوی نیست: برای کاربر لازم نیست وضعیت بررسی کانال‌ها رو بخونه
+  if (PUBLIC_CMDS.includes(cmd) && cmd !== "/updates") {
+    if (!(await dmIsMember(env, uid))) return sendGate(env, chatId, DM_NOT_MEMBER);
     return runPublic(env, chatId, cmd);
   }
   return true;

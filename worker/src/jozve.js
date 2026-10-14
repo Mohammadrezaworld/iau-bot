@@ -460,6 +460,34 @@ const letterOf = (kind) => (kind === "note" ? "n" : "e");
 // دکمه‌ها: d:m منوی اصلی · d:n|d:e دسته‌ها · d:c<K><دسته> درس‌ها · d:o<K><درس> استادها · d:f<K><درس>|<استاد> فایل‌ها · d:x بستن
 // K = n (جزوه) یا e (نمونه‌سوال). نام درس و استاد حداکثر ۲۹ بایت، پس callback_data از ۶۴ بایت رد نمی‌شه.
 
+// دکمه‌ی عضویت گروه با درخواست عضویت (creates_join_request). لینک یک بار ساخته و کش می‌شه.
+export async function groupJoinMarkup(env) {
+  try {
+    const cached = await env.DB.prepare("SELECT value FROM settings WHERE key = 'group_join_link'").first();
+    let link = cached && cached.value;
+    if (!link) {
+      const g = await env.DB.prepare("SELECT value FROM settings WHERE key = 'group_id'").first();
+      if (!g || !g.value) return undefined;
+      const r = await tg(env, "createChatInviteLink", { chat_id: g.value, creates_join_request: true, name: "dm-join" });
+      link = r && r.invite_link;
+      if (!link) return undefined;
+      await env.DB.prepare(
+        "INSERT INTO settings (key, value) VALUES ('group_join_link', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+      ).bind(link).run();
+    }
+    return { inline_keyboard: [[{ text: "عضویت در گروه", url: link }]] };
+  } catch (err) {
+    await recordEvent(env, "jozve", "", "error", `join_link: ${err && err.message ? err.message : "unknown"}`);
+    return undefined;
+  }
+}
+
+// پیام شرط عضویت، با دکمه‌ی عضویت در گروه اگه لینک ساخته بشه
+export async function sendGate(env, chatId, text) {
+  const markup = await groupJoinMarkup(env);
+  return tg(env, "sendMessage", { chat_id: chatId, text, ...(markup ? { reply_markup: markup } : {}) });
+}
+
 export async function dmIsMember(env, uid) {
   const groupId = await env.DB.prepare("SELECT value FROM settings WHERE key = 'group_id'").first();
   if (!groupId || !groupId.value) return false;
@@ -573,7 +601,7 @@ async function dmView(env, data) {
 
 // /start یا /jozve در پیوی کاربر عادی: منوی تازه‌ای ساخته می‌شه و منوی قبلی (اگه بود) پاک می‌شه
 export async function openDmMenu(env, uid) {
-  if (!(await dmIsMember(env, uid))) return sendMessage(env, uid, DM_NOT_MEMBER);
+  if (!(await dmIsMember(env, uid))) return sendGate(env, uid, DM_NOT_MEMBER);
   const prev = await getDmMenu(env, uid);
   if (prev && prev.msg) await tryDeleteMessage(env, uid, prev.msg);
   const main = dmMainMarkup();
