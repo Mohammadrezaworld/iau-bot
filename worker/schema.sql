@@ -284,6 +284,7 @@ CREATE TABLE IF NOT EXISTS effects (
   op_key     TEXT PRIMARY KEY,
   kind       TEXT NOT NULL,
   state      TEXT NOT NULL,                -- intent · done · failed
+  row_id     INTEGER,                      -- شناسه‌ی ردیف DB (برای بررسی دستی)
   update_id  INTEGER,
   lease      TEXT NOT NULL DEFAULT '',
   result     TEXT NOT NULL DEFAULT '',

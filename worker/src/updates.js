@@ -1,4 +1,4 @@
-// صف update های webhook (جدول update_queue).
+// صف update های webhook (جدول update_queue). تضمین: حداکثر یک تلاش خودکار برای هر update؛ نتیجه‌ی مبهم به مالک می‌رسه (exactly-once نیست).
 // حالت‌ها: processing · done · failed (شکست؛ تلاش خودکار مجدد مجاز) · needs_review (نیاز به تصمیم مالک)
 // reason: error | exhausted | ambiguous (اثر نامشخص) | done_write (انجام شد ولی ثبت پایان نشد) | migrated | owner_applied | owner_not_applied
 // هر تلاش یک lease می‌گیره؛ فقط صاحب lease فعلی می‌تونه وضعیت رو تغییر بده.
@@ -115,7 +115,7 @@ async function hasUnknownEffects(env, id) {
 export async function listReview(env) {
   const now = nowS();
   const { results } = await env.DB.prepare(
-    `SELECT update_id, state, reason, attempts, notify_state, last_error, at_utc, payload IS NOT NULL AS has_payload
+    `SELECT update_id, state, reason, attempts, notify_state, last_error, at_utc, payload
      FROM update_queue
      WHERE state = 'needs_review'
         OR (state = 'processing' AND at_utc < ?)
@@ -125,9 +125,30 @@ export async function listReview(env) {
   ).bind(now - STUCK_PROCESSING_S, now - STUCK_PROCESSING_S).all();
   const out = [];
   for (const r of results) {
-    out.push({ ...r, unknown: await hasUnknownEffects(env, r.update_id) });
+    const effects = await effectsFor(env, r);
+    out.push({
+      update_id: r.update_id, state: r.state, reason: r.reason, notify_state: r.notify_state,
+      last_error: r.last_error, has_payload: r.payload != null,
+      unknown: effects.some((e) => e.state === "intent"), effects,
+    });
   }
   return out;
+}
+
+// اثرهای این update برای بررسی دستی: شناسه‌ی ردیف DB یا شناسه‌ی پیام Telegram (اگه ثبت شده)
+// اثرهای DB با کلید پیام (msg:chat:message_id:…) پیدا می‌شن؛ متن update هیچ‌وقت نمایش داده نمی‌شه
+async function effectsFor(env, row) {
+  let prefix = null;
+  if (row.payload) {
+    try {
+      const u = JSON.parse(row.payload);
+      if (u.message && u.message.chat) prefix = `msg:${u.message.chat.id}:${u.message.message_id}:%`;
+    } catch (err) { /* payload خراب: فقط اثرهای با update_id */ }
+  }
+  const { results } = await env.DB.prepare(
+    "SELECT op_key, kind, state, row_id, msg_id FROM effects WHERE update_id = ? OR (? IS NOT NULL AND op_key LIKE ?) ORDER BY at_utc DESC LIMIT 5"
+  ).bind(row.update_id, prefix, prefix || "").all();
+  return results;
 }
 
 export function describeReviewRow(r) {
@@ -138,6 +159,10 @@ export function describeReviewRow(r) {
   if (r.notify_state === "failed") parts.push("اطلاع خودکار نرسید");
   if (!r.has_payload) parts.push("متن ذخیره نیست (فقط بستن ممکن است)");
   if (r.last_error) parts.push(`خطا: ${String(r.last_error).slice(0, 120)}`);
+  for (const e of r.effects || []) {
+    const ref = [e.row_id != null ? `ردیف DB #${e.row_id}` : "", e.msg_id != null ? `پیام تلگرام #${e.msg_id}` : ""].filter(Boolean).join("، ") || "شناسه ثبت نشده";
+    parts.push(`• ${e.kind} · ${e.state} · ${ref} · کلید ${e.op_key}`);
+  }
   return parts.join("\n");
 }
 

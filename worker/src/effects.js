@@ -1,7 +1,11 @@
 // ثبت اثرهای بیرونی و داخلی هر update (جدول effects).
-// - DB (contacts/resources/events): درج ردیف و ثبت effect در یک batch (تراکنش D1)؛ کلید عملیات پایدار است، پس retry ردیف دوم نمی‌سازه.
+// تضمین‌ها (نه exactly-once):
+// - DB (contacts/resources/events): درج ردیف و ثبت effect در یک batch (تراکنش D1) با کلید پایدار.
+//   اگه effect با همان کلید done باشه، ردیف دوباره درج نمی‌شه. شناسه‌ی ردیف (row_id) ثبت می‌شه.
 // - ارسال بیرونی (copyMessage جزوه): پیش از تماس با تلگرام، با lease همین اجرا claim می‌شه (state=intent).
-//   اگه intent بمونه یعنی نتیجه‌ی ارسال نامشخصه؛ retry کور انجام نمی‌شه و مالک باید تصمیم بگیره (/resolve_update).
+//   یعنی هر کلید حداکثر یک تلاش خودکار دارد. اگه نتیجه‌ی ارسال نامشخص بمونه (شبکه، پاسخ ناخوانا، یا ثبت نتیجه شکست بخوره)،
+//   intent می‌مونه و update به needs_review (ambiguous) می‌ره. تلاش دوباره فقط با تصمیم مالک (/resolve_update) ممکنه.
+//   تلگرام ارسال تکراری را جلوگیری نمی‌کنه؛ اگه پیام واقعاً رسیده باشه ولی ما ندونیم، فقط مالک می‌تونه تصمیم بگیره.
 // حالت‌ها: intent (در حال انجام / نامشخص) · done (انجام شد؛ msg_id ذخیره شده) · failed (تلگرام صریحاً رد کرده؛ تلاش مجدد مجازه)
 
 export const EFFECT_STALE_S = 90;
@@ -29,10 +33,17 @@ export async function dbEffect(env, opKey, kind, stmt, result) {
       .bind(opKey, kind, nowS()),
     env.DB.prepare(`INSERT INTO ${stmt.table} (${cols}) SELECT ${marks} WHERE EXISTS (SELECT 1 FROM effects WHERE op_key = ? AND state = 'intent')`)
       .bind(...stmt.vals, opKey),
-    env.DB.prepare("UPDATE effects SET state = 'done', result = ? WHERE op_key = ? AND state = 'intent'")
+    // last_insert_rowid فقط وقتی این batch ردیف را درج کرده (state=intent) معتبره
+    env.DB.prepare("UPDATE effects SET state = 'done', result = ?, row_id = last_insert_rowid() WHERE op_key = ? AND state = 'intent'")
       .bind(String(result).slice(0, 500), opKey),
   ]);
-  return { created: res[2].meta.changes === 1 };
+  const created = res[2].meta.changes === 1;
+  let rowId = null;
+  if (created) {
+    const r = await env.DB.prepare("SELECT row_id FROM effects WHERE op_key = ?").bind(opKey).first();
+    rowId = r ? r.row_id : null;
+  }
+  return { created, rowId };
 }
 
 // ادعای ارسال بیرونی با lease اجرا. فقط اگه lease هنوز مال همین اجراست.
