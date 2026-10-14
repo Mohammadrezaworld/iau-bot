@@ -7,12 +7,12 @@ import { sendReminders } from "./reminders.js";
 import { handleCallback } from "./wizard.js";
 import { handleKeywordCallback } from "./keywords.js";
 import { handleHolidayCallback } from "./holidays.js";
-import { handleJozvePost, handleJozveCommand, handleJozveCallback, handleJozveRemoveCallback, handleDmCallback } from "./jozve.js";
+import { handleJozvePost, handleJozveCommand, handleJozveCallback, handleJozveRemoveCallback, handleDmCallback, groupMovedGuide, dmIsMember, DM_NOT_MEMBER } from "./jozve.js";
 import { flushPosts, cleanPostText, inTehranQuietHours } from "./channels.js";
 import { isAdmin } from "./admin.js";
 import { buildBackup } from "./admin.js";
 import { sendJsonDocument, tg } from "./telegram.js";
-import { handleMetroCommand, handleMetroCallback, handleMetroUploadCallback, cleanupMetroMessages } from "./metro.js";
+import { handleMetroCallback, handleMetroUploadCallback, cleanupMetroMessages } from "./metro.js";
 import { handleScrapeReport, recordEvent, reportError, checkScrapeHealth, sendDailySummary, redact } from "./monitor.js";
 
 const json = (obj, status = 200) =>
@@ -149,10 +149,15 @@ async function groupSilenced(env, update) {
   return inTehranQuietHours(env);
 }
 
+const GROUP_MOVED = ["/metro", "/call", "/links", "/events", "/next", "/term", "/left", "/updates"];
 // گروه: فقط دستورهای عمومی، با ضداسپم ۳۰ ثانیه‌ای برای هر کاربر (ادمین‌ها مستثنی)
 async function handleGroupMessage(env, msg) {
   const { cmd } = parseCmd(msg.text);
-  if (cmd === "/metro" && msg.from) return handleMetroCommand(env, msg);
+  // دستورهای منتقل‌شده به پیوی: فقط راهنما (/updates بی‌صدا پاک می‌شه)
+  if (GROUP_MOVED.includes(cmd) && msg.from) {
+    if (cmd === "/updates") return tryDeleteMessage(env, msg.chat.id, msg.message_id);
+    return groupMovedGuide(env, msg.chat.id, msg.message_id);
+  }
   if (cmd === "/jozve" && msg.from) return handleJozveCommand(env, msg);
   if (!PUBLIC_CMDS.includes(cmd) || !msg.from) return;
   const userId = msg.from.id;
@@ -193,8 +198,13 @@ async function handleTelegramWebhook(request, env) {
       } else if (data.startsWith("j:") || data.startsWith("jk:")) {
         if (await isOurGroup(env, cq.message.chat.id)) await handleJozveCallback(env, cq);
       } else if (data.startsWith("m:")) {
-        // منوی /metro در گروه؛ فقط همان گروه و فقط برای درخواست‌کننده (داخل handler چک می‌شه)
-        if (await isOurGroup(env, cq.message.chat.id)) await handleMetroCallback(env, cq);
+        // منوی /metro: در پیوی (کاربر عضو) یا گروه قدیمی؛ فقط برای درخواست‌کننده (داخل handler چک می‌شه)
+        if (cq.message.chat.type === "private") {
+          if (await dmIsMember(env, cq.from.id)) await handleMetroCallback(env, cq);
+          else await tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: DM_NOT_MEMBER, show_alert: true });
+        } else if (await isOurGroup(env, cq.message.chat.id)) {
+          await handleMetroCallback(env, cq);
+        }
       } else if (data === "x:c" && cq.message.chat.type === "private" && (await isAdmin(env, cq.from.id))) {
         // بستن لیست‌های حذف و ویرایش در DM
         await tryDeleteMessage(env, cq.message.chat.id, cq.message.message_id);
