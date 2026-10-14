@@ -8,7 +8,7 @@ import { handleCallback } from "./wizard.js";
 import { handleKeywordCallback } from "./keywords.js";
 import { handleHolidayCallback } from "./holidays.js";
 import { handleJozvePost, handleJozveCommand, handleJozveCallback, handleJozveRemoveCallback } from "./jozve.js";
-import { flushPosts, cleanPostText } from "./channels.js";
+import { flushPosts, cleanPostText, inTehranQuietHours } from "./channels.js";
 import { isAdmin } from "./admin.js";
 import { buildBackup } from "./admin.js";
 import { sendJsonDocument, tg } from "./telegram.js";
@@ -141,6 +141,14 @@ async function isOurGroup(env, chatId) {
   return groupId !== "" && String(chatId) === String(groupId);
 }
 
+// پیام یا دکمه‌ی گروه اصلی در ساعت سکوت (۰۲ تا ۰۶ تهران) → بی‌صدا نادیده گرفته می‌شه
+async function groupSilenced(env, update) {
+  const chat = (update.message || update.edited_message || (update.callback_query && update.callback_query.message) || {}).chat;
+  if (!chat || chat.type === "private") return false;
+  if (!(await isOurGroup(env, chat.id))) return false;
+  return inTehranQuietHours(env);
+}
+
 // گروه: فقط دستورهای عمومی، با ضداسپم ۳۰ ثانیه‌ای برای هر کاربر (ادمین‌ها مستثنی)
 async function handleGroupMessage(env, msg) {
   const { cmd } = parseCmd(msg.text);
@@ -172,6 +180,8 @@ async function handleTelegramWebhook(request, env) {
   }
 
   const update = await request.json().catch(() => null);
+  // ساعت سکوت گروه: هیچ پاسخ یا واکنشی به پیام/دکمه‌ی گروه داده نمی‌شه (دستورهای قدیمی هم)
+  if (update && (await groupSilenced(env, update))) return new Response("ok", { status: 200 });
   try {
     if (update && update.callback_query) {
       const cq = update.callback_query;
