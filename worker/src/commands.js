@@ -4,7 +4,7 @@ import { isAdmin, isOwner, audit, buildBackup, statusText, logText, getRole } fr
 import { answerPublic, getSetting, sendCachedAnswer } from "./public.js";
 import { parseDateInput, normalizeDigits } from "./jalali.js";
 import { startWizard, handleWizardText, removeList } from "./wizard.js";
-import { updatesText, flushPosts } from "./channels.js";
+import { updatesText, flushPosts, scrapeCommand } from "./channels.js";
 import { tg } from "./telegram.js";
 import { faDate } from "./calendar.js";
 import { handleManage, publicContacts, publicResources, publicEvents, MANAGE_HELP } from "./manage.js";
@@ -72,6 +72,9 @@ const HELP = [
   "/holiday_add ۱۴۰۵/۱۰/۰۲ عنوان — افزودن تعطیلی",
   "/holiday_remove [تاریخ] — حذف تعطیلی (بدون تاریخ: لیست با دکمه)",
   "/set_quiet ۰۲-۰۶ — ساعت سکوت کانال‌ها (به وقت تهران)",
+  "/scrape_pause — توقف ارسال پست‌های کانال‌ها به گروه (فقط مالک)",
+  "/scrape_resume [all] — ادامه ارسال؛ پیش‌فرض: پست‌های معوق ارسال نشن، فقط جدیدها؛ all: معوق‌ها هم برن (فقط مالک)",
+  "/scrape_status — وضعیت ارسال و تعداد پست‌های معوق",
   "/undo — برگشت آخرین تغییر کلمات، تعطیلات یا جدول مترو (۵ تغییر آخر)",
   "جدول مترو: فایل xlsx را همین‌جا در پیوی بفرست (فقط ادمین کامل)؛ پیش‌نمایش و تأیید دارد.",
   "/help — همین راهنما",
@@ -162,6 +165,10 @@ export async function handleAdminMessage(env, message) {
       return sendMessage(env, chatId, await undoLast(env, userId));
     case "/set_quiet":
       return setQuietCommand(env, chatId, userId, arg);
+    case "/scrape_pause":
+    case "/scrape_resume":
+    case "/scrape_status":
+      return scrapeCommand(env, chatId, userId, cmd, arg, await isOwner(env, userId));
     case "/keyword_list":
     case "/keyword_add":
     case "/keyword_remove":
