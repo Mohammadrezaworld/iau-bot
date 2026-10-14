@@ -7,7 +7,7 @@ import hashlib
 import json
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from playwright.sync_api import sync_playwright
@@ -89,6 +89,9 @@ def page_debug(page) -> str:
 
 
 TEHRAN = ZoneInfo("Asia/Tehran")
+# پست‌های شب (از ۲۳:۳۰ به بعد) برای روز بعد حساب می‌شن: با این جابه‌جایی، پست ۲۳:۳۰ امروز = فردا.
+# گروه تا ۰۲:۰۰ باز است؛ پستی که ساعت ۰۲ به بعد بیاد، تا ۰۶ صبح بعد صبر می‌کنه و همون روز ارسال می‌شه.
+NIGHT_SHIFT = timedelta(minutes=30)
 
 # ساختار جدید صفحه: هر پیام یک بلوک با data-sid (شناسه‌ی ثابت) و جداکننده‌ی روز با datetime (UTC).
 # همه‌ی گره‌ها به ترتیب صفحه خونده می‌شن تا تاریخ هر پیام از نزدیک‌ترین جداکننده‌ی بالاش گرفته بشه.
@@ -119,7 +122,7 @@ def tehran_date(iso: str) -> str:
         dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
     except ValueError:
         return ""
-    return dt.astimezone(TEHRAN).date().isoformat()
+    return (dt.astimezone(TEHRAN) + NIGHT_SHIFT).date().isoformat()
 
 
 def date_from_sid(sid: str) -> str:
@@ -128,7 +131,7 @@ def date_from_sid(sid: str) -> str:
     m = re.search(r"-(\d{13})$", sid or "")
     if not m:
         return ""
-    return datetime.fromtimestamp(int(m.group(1)) / 1000, TEHRAN).date().isoformat()
+    return (datetime.fromtimestamp(int(m.group(1)) / 1000, TEHRAN) + NIGHT_SHIFT).date().isoformat()
 
 
 def posts_from_v2(cards: list[dict], channel: str) -> list[dict]:
