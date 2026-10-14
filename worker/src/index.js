@@ -9,7 +9,7 @@ import { handleKeywordCallback } from "./keywords.js";
 import { handleHolidayCallback } from "./holidays.js";
 import { handleJozvePost, handleJozveCommand, handleJozveCallback, handleJozveRemoveCallback, handleDmCallback, groupMovedGuide, dmIsMember, DM_NOT_MEMBER } from "./jozve.js";
 import { cleanPostText, inTehranQuietHours } from "./channels.js";
-import { prepareBatch, handleBatchCallback, expireBatches } from "./batches.js";
+import { prepareBatch, handleBatchCallback, expireBatches, listStalledBatches } from "./batches.js";
 import { isAdmin, isOwner } from "./admin.js";
 import { buildBackup } from "./admin.js";
 import { sendJsonDocument, tg } from "./telegram.js";
@@ -82,6 +82,11 @@ async function handleIngest(request, env) {
       .run();
     if (res.meta && res.meta.changes > 0) {
       newCount += 1;
+      if (markSent) {
+        const why = firstRun ? "baseline" : dryRun ? "dry_run" : category === "old" ? "old" : "undated";
+        await env.DB.prepare("INSERT OR IGNORE INTO post_outcomes (post_id, outcome, at_utc) SELECT id, ?, ? FROM posts WHERE source = ? AND channel = ? AND post_id = ?")
+          .bind(why, ts, source, channel, String(p.post_id)).run();
+      }
       if (category === "send") {
         sendCount += 1;
         if (report.send.length < 5) report.send.push(String(p.text || "").slice(0, 120));
@@ -101,10 +106,13 @@ async function handleIngest(request, env) {
   const held = source === "bale" && !firstRun && !dryRun && sendCount > FLOOD_LIMIT;
   if (held) {
     await env.DB.prepare(
+      "INSERT OR IGNORE INTO post_outcomes (post_id, outcome, at_utc) SELECT id, 'held_flood', ? FROM posts WHERE source = ? AND channel = ? AND sent_at_utc IS NULL AND first_seen_utc = ?"
+    ).bind(ts, source, channel, ts).run();
+    await env.DB.prepare(
       "UPDATE posts SET sent_at_utc = ? WHERE source = ? AND channel = ? AND sent_at_utc IS NULL AND first_seen_utc = ?"
     ).bind(ts, source, channel, ts).run();
     await recordEvent(env, source, channel, "error", `flood: ${sendCount} پست جدید ثبت شد ولی به گروه نرفت`);
-    await notifyOwner(env, `پست‌های جدید بله (${channel}): ${sendCount} پست یک‌جا رسید. برای امنیت به گروه نرفت. اگه باید فرستاده بشه، بگو تا دستی بفرستم.`);
+    await notifyOwner(env, `پست‌های جدید بله (${channel}): ${sendCount} پست یک‌جا رسید. برای امنیت به گروه نرفت و کنار گذاشته شدن. در این نسخه مسیر ارسال مجدد ندارن؛ وضعیتشون در /scrape_status ثبت شده.`);
   }
 
   // گزارش حالت آزمایشی: هر بار که پست جدیدی باشه، برای مالک خلاصه‌ی تصمیم‌ها
@@ -319,14 +327,24 @@ async function handleOwnerCommand(env, msg) {
   const chatId = msg.chat.id;
   if (cmd === "/review") {
     const rows = await listReview(env);
-    if (!rows.length) return tg(env, "sendMessage", { chat_id: chatId, text: "موردی نیازمند بررسی نیست." });
-    const text = ["موارد نیازمند بررسی:", "", ...rows.map(describeReviewRow)].join("\n\n");
-    const inline_keyboard = rows.map((r) => [
-      { text: "تلاش مجدد", callback_data: `rv:r:${r.update_id}` },
-      { text: "اعمال شد", callback_data: `rv:a:${r.update_id}` },
-      { text: "انجام نشد", callback_data: `rv:n:${r.update_id}` },
-    ]);
-    return tg(env, "sendMessage", { chat_id: chatId, text, reply_markup: { inline_keyboard }, disable_web_page_preview: true });
+    const stalled = await listStalledBatches(env);
+    if (!rows.length && !stalled.length) return tg(env, "sendMessage", { chat_id: chatId, text: "موردی نیازمند بررسی نیست." });
+    const parts = [];
+    const inline_keyboard = [];
+    if (rows.length) {
+      parts.push(["موارد نیازمند بررسی:", "", ...rows.map(describeReviewRow)].join("\n\n"));
+      for (const r of rows) inline_keyboard.push([
+        { text: "تلاش مجدد", callback_data: `rv:r:${r.update_id}` },
+        { text: "اعمال شد", callback_data: `rv:a:${r.update_id}` },
+        { text: "انجام نشد", callback_data: `rv:n:${r.update_id}` },
+      ]);
+    }
+    // دسته‌ی ناقص: مستقل از پیش‌نمایش قدیمی؛ ادامه فقط با دکمه‌ی مالک و فقط برای بخش‌های نرفته
+    for (const b of stalled) {
+      parts.push(`دسته‌ی ${b.id} ناقص مانده: ${b.left_n} پست نرفته${b.amb_n ? ` (${b.amb_n} مورد مبهم؛ اول در فهرست بالا تعیین کن)` : ""}.`);
+      inline_keyboard.push([{ text: `ادامه‌ی دسته ${b.id}`, callback_data: `sb:c:${b.id}` }]);
+    }
+    return tg(env, "sendMessage", { chat_id: chatId, text: parts.join("\n\n"), reply_markup: { inline_keyboard }, disable_web_page_preview: true });
   }
   if (cmd === "/retry_update") {
     const id = Number(arg.trim());

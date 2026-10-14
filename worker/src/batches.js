@@ -8,6 +8,7 @@ import { getSetting } from "./public.js";
 import { recordEvent } from "./monitor.js";
 import { scrapePaused, inTehranQuietHours, keywordsList, cleanPostText, isJunkPost, buildSections, chunkMessages, sendChunk, sendPhotos } from "./channels.js";
 import { claimExternal, finishExternal, AmbiguousError, LeaseLostError } from "./effects.js";
+import { setOutcome } from "./outcomes.js";
 
 export const BATCH_TTL_S = 12 * 3600;
 const CONTENT_ERROR = /too long|text is empty|parse entities|message text/i;
@@ -36,6 +37,7 @@ export async function prepareBatch(env) {
   const candidates = [];
   for (const p of results) {
     if (p.source === "bale" && isJunkPost(p.text)) {
+      await setOutcome(env, [p.id], "junk");
       await env.DB.prepare("UPDATE posts SET sent_at_utc = ? WHERE id = ?").bind(nowUtc(), p.id).run();
     } else {
       candidates.push(p);
@@ -145,6 +147,8 @@ export async function approveBatch(env, ctx, bid) {
   }
   const unitKeys = [...byUnit.keys()].sort((a, b) => Number(a.split(":").pop()) - Number(b.split(":").pop()));
 
+  let sentNow = 0;
+  let ambiguousLeft = 0;
   for (const key of unitKeys) {
     const unitPosts = byUnit.get(key);
     const ids = unitPosts.map((p) => p.id);
@@ -152,7 +156,8 @@ export async function approveBatch(env, ctx, bid) {
     if (claim.status === "lease_lost") throw new LeaseLostError();
     if (claim.status === "done") { await markSent(env, ids); continue; }
     if (claim.status === "busy") return "این دسته هم‌اکنون در حال ارساله؛ چیزی دوبار فرستاده نشد.";
-    if (claim.status === "ambiguous") throw new AmbiguousError(key);
+    // نتیجه‌ی نامشخص قبلی: هرگز خودکار دوباره فرستاده نمی‌شه؛ تصمیم با مالک در /review
+    if (claim.status === "ambiguous") { ambiguousLeft += ids.length; continue; }
     const blocks = buildSections(unitPosts, keywords).flatMap((s) => s.blocks);
     let msgId;
     try {
@@ -164,8 +169,11 @@ export async function approveBatch(env, ctx, bid) {
       }
       throw new AmbiguousError(key);
     }
-    await finishExternal(env, ctx, key, { ok: true, msgId, result: `posts ${ids.join(",")}` });
+    const recorded = await finishExternal(env, ctx, key, { ok: true, msgId, result: `posts ${ids.join(",")}` });
+    // پیام رفته ولی ثبتش نشده: پست‌ها sent نمی‌شن و اثر نامشخص می‌مونه تا مالک تصمیم بگیره
+    if (!recorded) throw new AmbiguousError(key);
     await markSent(env, ids);
+    sentNow += ids.length;
   }
 
   // عکس‌ها: یک آلبوم برای هر کانال؛ خطای قطعی عکس، متن را خراب نمی‌کنه
@@ -178,7 +186,8 @@ export async function approveBatch(env, ctx, bid) {
     if (claim.status !== "claimed") continue; // done/busy: قبلاً فرستاده شده یا در حال ارسال
     try {
       const msgId = await sendPhotos(env, groupId, sec.label, sec.photos);
-      await finishExternal(env, ctx, key, { ok: true, msgId, result: `photos ${sec.label}` });
+      const recorded = await finishExternal(env, ctx, key, { ok: true, msgId, result: `photos ${sec.label}` });
+      if (!recorded) throw new AmbiguousError(key);
     } catch (err) {
       if (err && err.refused) {
         await finishExternal(env, ctx, key, { ok: false, error: err.message });
@@ -189,11 +198,33 @@ export async function approveBatch(env, ctx, bid) {
     }
   }
 
-  await env.DB.prepare("UPDATE scrape_batches SET state = 'sent' WHERE id = ? AND state = 'sending'").bind(bid).run();
-  return `ارسال شد: ${reloaded.results.length} پست.`;
+  // دسته فقط وقتی «ارسال شد» می‌شه که هیچ پستی باقی نمونده باشه؛ وگرنه sending می‌مونه تا ادامه یا تصمیم مالک
+  const left = await env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM posts p JOIN scrape_batch_items bi ON bi.post_id = p.id WHERE bi.batch_id = ? AND p.sent_at_utc IS NULL"
+  ).bind(bid).first();
+  const remaining = left ? left.n : 0;
+  if (remaining === 0) {
+    await env.DB.prepare("UPDATE scrape_batches SET state = 'sent' WHERE id = ? AND state = 'sending'").bind(bid).run();
+    return `ارسال شد: ${reloaded.results.length} پست.`;
+  }
+  const amb = ambiguousLeft ? ` ${ambiguousLeft} پست نتیجه‌ی مبهم دارد و در /review است.` : "";
+  return `ارسال ناقص: ${sentNow} پست رفت، ${remaining} پست هنوز نرفته.${amb} با «ادامه» فقط بخش‌های نرفته ارسال می‌شن.`;
+}
+
+// دسته‌هایی که در sending مانده‌اند و هنوز پستی دارند (برای /review). هیچ زمان‌انقضایی ندارند.
+export async function listStalledBatches(env) {
+  const { results } = await env.DB.prepare(
+    `SELECT b.id AS id,
+       (SELECT COUNT(*) FROM scrape_batch_items bi JOIN posts p ON p.id = bi.post_id WHERE bi.batch_id = b.id AND p.sent_at_utc IS NULL) AS left_n,
+       (SELECT COUNT(*) FROM scrape_batch_items bi JOIN posts p ON p.id = bi.post_id
+          WHERE bi.batch_id = b.id AND p.sent_at_utc IS NULL AND EXISTS (SELECT 1 FROM effects e WHERE e.op_key = bi.unit AND e.state = 'intent')) AS amb_n
+     FROM scrape_batches b WHERE b.state = 'sending' ORDER BY b.id`
+  ).all();
+  return results.filter((r) => r.left_n > 0);
 }
 
 async function markSent(env, ids) {
+  await setOutcome(env, ids, "delivered");
   for (const id of ids) {
     await env.DB.prepare("UPDATE posts SET sent_at_utc = ? WHERE id = ? AND sent_at_utc IS NULL").bind(nowUtc(), id).run();
   }
@@ -206,13 +237,18 @@ export async function rejectBatch(env, bid) {
     if (!b) return "این دسته پیدا نشد.";
     return `این دسته ${STATE_FA[b.state] || b.state} است؛ رد نشد.`;
   }
+  const queued = await env.DB.prepare(
+    "SELECT p.id AS id FROM posts p JOIN scrape_batch_items bi ON bi.post_id = p.id WHERE bi.batch_id = ? AND p.sent_at_utc IS NULL"
+  ).bind(bid).all();
+  await setOutcome(env, queued.results.map((r) => r.id), "rejected");
   await env.DB.prepare(
     "UPDATE posts SET sent_at_utc = ? WHERE sent_at_utc IS NULL AND id IN (SELECT post_id FROM scrape_batch_items WHERE batch_id = ?)"
   ).bind(nowUtc(), bid).run();
   return "دسته رد شد؛ این پست‌ها ارسال نمی‌شن.";
 }
 
-// دسته‌ی بی‌جواب: منقضی؛ عضوهاش آزاد می‌شن تا دسته‌ی بعدی (هیچ ارسالی نیست)
+// دسته‌ی بی‌جواب: منقضی؛ عضوهاش آزاد می‌شن تا دسته‌ی بعدی (هیچ ارسالی نیست).
+// فقط pending منقضی می‌شه؛ دسته‌ی sending (ارسال ناقص) هرگز خودکار آزاد نمی‌شه.
 export async function expireBatches(env) {
   const { results } = await env.DB.prepare("SELECT id FROM scrape_batches WHERE state = 'pending' AND expires_utc < ?")
     .bind(nowUtc()).all();
@@ -231,6 +267,14 @@ export async function expireBatches(env) {
   return { expired };
 }
 
+// ادامه‌ی دسته‌ی ناقص: فقط وقتی sending است. بخش‌های موفق و مبهم دوباره فرستاده نمی‌شن.
+export async function continueBatch(env, ctx, bid) {
+  const b = await env.DB.prepare("SELECT state FROM scrape_batches WHERE id = ?").bind(bid).first();
+  if (!b) return "این دسته پیدا نشد.";
+  if (b.state !== "sending") return `این دسته برای ادامه باز نیست (${STATE_FA[b.state] || b.state}).`;
+  return approveBatch(env, ctx, bid);
+}
+
 // دکمه‌های دسته (فقط مالک؛ مسیر را dispatch در index.js چک می‌کنه)
 export async function handleBatchCallback(env, cq, ctx) {
   const [, action, raw] = String(cq.data).split(":");
@@ -239,6 +283,7 @@ export async function handleBatchCallback(env, cq, ctx) {
   try {
     if (!Number.isSafeInteger(bid) || bid <= 0) text = "نامعتبر";
     else if (action === "s") text = await approveBatch(env, ctx, bid);
+    else if (action === "c") text = await continueBatch(env, ctx, bid);
     else if (action === "r") text = await rejectBatch(env, bid);
     else text = "نامعتبر";
   } catch (err) {

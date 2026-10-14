@@ -156,6 +156,13 @@ CREATE TABLE IF NOT EXISTS scrape_batch_items (
 CREATE INDEX IF NOT EXISTS scrape_batch_items_batch ON scrape_batch_items (batch_id);
 CREATE INDEX IF NOT EXISTS scrape_batch_items_unit ON scrape_batch_items (unit);
 
+-- وضعیت نهایی پست (چرا sent شد یا کنار رفت). اولین وضعیت می‌مونه.
+CREATE TABLE IF NOT EXISTS post_outcomes (
+  post_id INTEGER PRIMARY KEY,
+  outcome TEXT NOT NULL,
+  at_utc INTEGER NOT NULL
+);
+
 -- پایه‌گذاری یک‌باره: پست‌های قبل از راه‌اندازی ارسال گروه، علامت ارسال‌شده می‌خورن تا سیل پیام نیاد
 INSERT INTO settings (key, value) SELECT 'baseline_v1', 'pending' WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'baseline_v1');
 UPDATE posts SET sent_at_utc = first_seen_utc WHERE sent_at_utc IS NULL AND EXISTS (SELECT 1 FROM settings WHERE key = 'baseline_v1' AND value = 'pending');
