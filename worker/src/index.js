@@ -7,7 +7,7 @@ import { sendReminders } from "./reminders.js";
 import { handleCallback } from "./wizard.js";
 import { handleKeywordCallback } from "./keywords.js";
 import { handleHolidayCallback } from "./holidays.js";
-import { handleJozvePost, handleJozveCommand, handleJozveCallback, handleJozveRemoveCallback } from "./jozve.js";
+import { handleJozvePost, handleJozveCommand, handleJozveCallback, handleJozveRemoveCallback, handleDmMessage, handleDmCallback } from "./jozve.js";
 import { flushPosts, cleanPostText, inTehranQuietHours } from "./channels.js";
 import { isAdmin } from "./admin.js";
 import { buildBackup } from "./admin.js";
@@ -187,7 +187,10 @@ async function handleTelegramWebhook(request, env) {
       const cq = update.callback_query;
       const data = cq.data || "";
       if (!cq.message || !cq.message.chat) return new Response("ok", { status: 200 });
-      if (data.startsWith("j:") || data.startsWith("jk:")) {
+      if (data.startsWith("d:") && cq.message.chat.type === "private") {
+        // منوی شخصی جزوه‌ها در پیوی (کاربر عادی و ادمین)
+        await handleDmCallback(env, cq);
+      } else if (data.startsWith("j:") || data.startsWith("jk:")) {
         if (await isOurGroup(env, cq.message.chat.id)) await handleJozveCallback(env, cq);
       } else if (data.startsWith("m:")) {
         // منوی /metro در گروه؛ فقط همان گروه و فقط برای درخواست‌کننده (داخل handler چک می‌شه)
@@ -213,7 +216,8 @@ async function handleTelegramWebhook(request, env) {
     const msg = update && update.message;
     if (msg && msg.chat) {
       if (msg.chat.type === "private") {
-        await handleAdminMessage(env, msg);
+        // کاربر عادی: فقط /start و /jozve؛ بقیه‌ی پیام‌ها بی‌صدا نادیده گرفته می‌شن
+        if (!(await handleDmMessage(env, msg))) await handleAdminMessage(env, msg);
       } else if (await isOurGroup(env, msg.chat.id)) {
         await handleGroupMessage(env, msg);
       }
