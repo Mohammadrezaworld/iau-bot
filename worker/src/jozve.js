@@ -605,14 +605,15 @@ async function dmView(env, data) {
 }
 
 // /start یا /jozve در پیوی کاربر عادی: منوی تازه‌ای ساخته می‌شه و منوی قبلی (اگه بود) پاک می‌شه
-export async function openDmMenu(env, uid, text = DM_MENU_PROMPT) {
+export async function openDmMenu(env, uid, text = DM_MENU_PROMPT, host = false) {
   if (!(await dmIsMember(env, uid))) return sendGate(env, uid, DM_NOT_MEMBER);
   const prev = await getDmMenu(env, uid);
   if (prev && prev.msg) await tryDeleteMessage(env, uid, prev.msg);
+  if (prev && prev.hostMsg) await tryDeleteMessage(env, uid, prev.hostMsg);
   const main = dmMainMarkup();
   const sent = await tg(env, "sendMessage", { chat_id: uid, text, reply_markup: main });
   const now = nowS();
-  await saveDmMenu(env, uid, { msg: sent.message_id, created: now });
+  await saveDmMenu(env, uid, { msg: sent.message_id, created: now, host });
   await rememberMsg(env, uid, sent.message_id, DM_TTL);
 }
 
@@ -637,18 +638,31 @@ export async function handleDmCallback(env, cq) {
   const data = cq.data || "";
   if (data === "d:x") {
     await tryDeleteMessage(env, chatId, msgId);
+    if (state.hostMsg) await tryDeleteMessage(env, chatId, state.hostMsg);
     await saveDmMenu(env, uid, null);
     return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
   }
   const view = await dmView(env, data);
   if (!view) return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+  const left = Math.max(1, state.created + DM_MAX_LIFE - nowS());
+  if (state.host) {
+    // اولین جابه‌جایی از منوی خوش‌آمد: متن خوش‌آمد سرِ جاش می‌مونه؛ دکمه‌هاش برداشته و منو زیرش ادامه پیدا می‌کنه
+    try {
+      await tg(env, "editMessageReplyMarkup", { chat_id: chatId, message_id: msgId, reply_markup: { inline_keyboard: [] } });
+    } catch (err) {
+      console.error("dm_unmark", err && err.message ? err.message : "unknown");
+    }
+    const sent = await tg(env, "sendMessage", { chat_id: chatId, text: view.text, reply_markup: view.markup });
+    await saveDmMenu(env, uid, { msg: sent.message_id, created: state.created, hostMsg: msgId });
+    await rememberMsg(env, chatId, sent.message_id, Math.min(DM_TTL, left));
+    return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+  }
   try {
     await tg(env, "editMessageText", { chat_id: chatId, message_id: msgId, text: view.text, reply_markup: view.markup });
   } catch (err) {
     console.error("dm_edit", err && err.message ? err.message : "unknown");
   }
   // هر کلیک TTL رو تمدید می‌کنه، ولی بیشتر از سقف عمر منو نمی‌مونه
-  const left = Math.max(1, state.created + DM_MAX_LIFE - nowS());
   await rememberMsg(env, chatId, msgId, Math.min(DM_TTL, left));
   return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
 }
