@@ -177,6 +177,87 @@ async function handleGroupMessage(env, msg) {
   await tryDeleteMessage(env, msg.chat.id, msg.message_id);
 }
 
+// پردازش یک update: هر خطایی بیرون پرت می‌شه تا handleTelegramWebhook تصمیم بگیره
+async function dispatchUpdate(env, update) {
+  if (update && update.callback_query) {
+    const cq = update.callback_query;
+    const data = cq.data || "";
+    if (!cq.message || !cq.message.chat) return;
+    if (data.startsWith("d:") && cq.message.chat.type === "private") {
+      // منوی شخصی جزوه‌ها در پیوی (کاربر عادی و ادمین)
+      await handleDmCallback(env, cq);
+    } else if (data.startsWith("j:") || data.startsWith("jk:")) {
+      if (await isOurGroup(env, cq.message.chat.id)) await handleJozveCallback(env, cq);
+    } else if (data.startsWith("m:")) {
+      // منوی /metro: در پیوی (کاربر عضو) یا گروه قدیمی؛ فقط برای درخواست‌کننده (داخل handler چک می‌شه)
+      if (cq.message.chat.type === "private") {
+        if (await dmIsMember(env, cq.from.id)) await handleMetroCallback(env, cq);
+        else await tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: DM_NOT_MEMBER, show_alert: true });
+      } else if (await isOurGroup(env, cq.message.chat.id)) {
+        await handleMetroCallback(env, cq);
+      }
+    } else if (data === "x:c" && cq.message.chat.type === "private" && (await isAdmin(env, cq.from.id))) {
+      // بستن لیست‌های حذف و ویرایش در DM
+      await tryDeleteMessage(env, cq.message.chat.id, cq.message.message_id);
+      await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+    } else if (cq.message.chat.type === "private" && (await isAdmin(env, cq.from.id))) {
+      if (data.startsWith("mu:")) await handleMetroUploadCallback(env, cq);
+      else if (data.startsWith("kw:")) await handleKeywordCallback(env, cq);
+      else if (data.startsWith("hol:")) await handleHolidayCallback(env, cq);
+      else if (data.startsWith("jrm:")) await handleJozveRemoveCallback(env, cq);
+      else await handleCallback(env, cq);
+    }
+    return;
+  }
+  // پست‌های کانال خصوصی جزوه (آپلود ادمین‌ها)
+  if (update && update.channel_post) {
+    await handleJozvePost(env, update.channel_post);
+    return;
+  }
+  const msg = update && update.message;
+  if (msg && msg.chat) {
+    if (msg.chat.type === "private") {
+      // کاربر عادی: فقط /start و /jozve؛ بقیه‌ی پیام‌ها بی‌صدا نادیده گرفته می‌شن
+      if (!(await handleDmUser(env, msg))) await handleAdminMessage(env, msg);
+    } else if (await isOurGroup(env, msg.chat.id)) {
+      await handleGroupMessage(env, msg);
+    }
+  }
+}
+
+// صف idempotent: هر update_id فقط یک بار موفق پردازش می‌شه.
+// حالت‌ها: processing (در حال پردازش) · done (موفق) · failed (شکست؛ دوباره می‌شه امتحان کرد)
+const MAX_UPDATE_ATTEMPTS = 3;
+const STALE_PROCESSING_S = 90;
+const PROCESSED_KEEP_S = 7 * 86400;
+
+async function claimUpdate(env, id) {
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare("DELETE FROM processed_updates WHERE state = 'done' AND at_utc < ?").bind(now - PROCESSED_KEEP_S).run();
+  const ins = await env.DB.prepare(
+    "INSERT OR IGNORE INTO processed_updates (update_id, state, attempts, at_utc) VALUES (?, 'processing', 1, ?)"
+  ).bind(id, now).run();
+  if (ins.meta.changes === 1) return "claimed";
+  const row = await env.DB.prepare("SELECT state, attempts, at_utc FROM processed_updates WHERE update_id = ?").bind(id).first();
+  if (!row) return "busy";
+  if (row.state === "done") return "skip";
+  if (row.attempts >= MAX_UPDATE_ATTEMPTS) {
+    console.error("update_dropped", id);
+    return "skip";
+  }
+  if (row.state === "processing" && now - row.at_utc < STALE_PROCESSING_S) return "busy";
+  // بازپردازش: فقط اگه وضعیت و تعداد تلاش هنوز همون چیزی باشه که خوندیم (جلوگیری از دو پردازش هم‌زمان)
+  const upd = await env.DB.prepare(
+    "UPDATE processed_updates SET state = 'processing', attempts = attempts + 1, at_utc = ? WHERE update_id = ? AND state = ? AND attempts = ?"
+  ).bind(now, id, row.state, row.attempts).run();
+  return upd.meta.changes === 1 ? "claimed" : "busy";
+}
+
+async function markUpdate(env, id, state) {
+  await env.DB.prepare("UPDATE processed_updates SET state = ?, at_utc = ? WHERE update_id = ?")
+    .bind(state, Math.floor(Date.now() / 1000), id).run();
+}
+
 async function handleTelegramWebhook(request, env) {
   // Telegram رمز secret_token رو توی هدر می‌فرسته؛ اگه نبود، درخواست جعلیه
   const expected = await webhookSecret(env);
@@ -187,55 +268,26 @@ async function handleTelegramWebhook(request, env) {
   const update = await request.json().catch(() => null);
   // ساعت سکوت گروه: هیچ پاسخ یا واکنشی به پیام/دکمه‌ی گروه داده نمی‌شه (دستورهای قدیمی هم)
   if (update && (await groupSilenced(env, update))) return new Response("ok", { status: 200 });
-  try {
-    if (update && update.callback_query) {
-      const cq = update.callback_query;
-      const data = cq.data || "";
-      if (!cq.message || !cq.message.chat) return new Response("ok", { status: 200 });
-      if (data.startsWith("d:") && cq.message.chat.type === "private") {
-        // منوی شخصی جزوه‌ها در پیوی (کاربر عادی و ادمین)
-        await handleDmCallback(env, cq);
-      } else if (data.startsWith("j:") || data.startsWith("jk:")) {
-        if (await isOurGroup(env, cq.message.chat.id)) await handleJozveCallback(env, cq);
-      } else if (data.startsWith("m:")) {
-        // منوی /metro: در پیوی (کاربر عضو) یا گروه قدیمی؛ فقط برای درخواست‌کننده (داخل handler چک می‌شه)
-        if (cq.message.chat.type === "private") {
-          if (await dmIsMember(env, cq.from.id)) await handleMetroCallback(env, cq);
-          else await tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: DM_NOT_MEMBER, show_alert: true });
-        } else if (await isOurGroup(env, cq.message.chat.id)) {
-          await handleMetroCallback(env, cq);
-        }
-      } else if (data === "x:c" && cq.message.chat.type === "private" && (await isAdmin(env, cq.from.id))) {
-        // بستن لیست‌های حذف و ویرایش در DM
-        await tryDeleteMessage(env, cq.message.chat.id, cq.message.message_id);
-        await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
-      } else if (cq.message.chat.type === "private" && (await isAdmin(env, cq.from.id))) {
-        if (data.startsWith("mu:")) await handleMetroUploadCallback(env, cq);
-        else if (data.startsWith("kw:")) await handleKeywordCallback(env, cq);
-        else if (data.startsWith("hol:")) await handleHolidayCallback(env, cq);
-        else if (data.startsWith("jrm:")) await handleJozveRemoveCallback(env, cq);
-        else await handleCallback(env, cq);
-      }
-      return new Response("ok", { status: 200 });
-    }
-    // پست‌های کانال خصوصی جزوه (آپلود ادمین‌ها)
-    if (update && update.channel_post) {
-      await handleJozvePost(env, update.channel_post);
-      return new Response("ok", { status: 200 });
-    }
-    const msg = update && update.message;
-    if (msg && msg.chat) {
-      if (msg.chat.type === "private") {
-        // کاربر عادی: فقط /start و /jozve؛ بقیه‌ی پیام‌ها بی‌صدا نادیده گرفته می‌شن
-        if (!(await handleDmUser(env, msg))) await handleAdminMessage(env, msg);
-      } else if (await isOurGroup(env, msg.chat.id)) {
-        await handleGroupMessage(env, msg);
-      }
-    }
-  } catch (err) {
-    // خطا رو لاگ می‌کنیم ولی 200 برمی‌گردونیم تا تلگرام بی‌خودی تکرار نکنه
-    console.error("webhook_error", err && err.message ? err.message : "unknown");
+
+  const id = update && Number.isSafeInteger(update.update_id) ? update.update_id : null;
+  if (id !== null) {
+    const claim = await claimUpdate(env, id);
+    // busy: یه پردازش دیگه همین update رو داره؛ ۵۰۰ تا تلگرام بعداً دوباره بفرسته
+    if (claim === "busy") return new Response("busy", { status: 500 });
+    if (claim === "skip") return new Response("ok", { status: 200 });
   }
+  try {
+    await dispatchUpdate(env, update);
+  } catch (err) {
+    console.error("webhook_error", err && err.message ? err.message : "unknown");
+    if (id !== null) {
+      // شکست: علامت failed، و ۵۰۰ تا تلگرام دوباره بفرسته (تا سقف تلاش‌ها)
+      await markUpdate(env, id, "failed");
+      return new Response("retry", { status: 500 });
+    }
+    return new Response("ok", { status: 200 });
+  }
+  if (id !== null) await markUpdate(env, id, "done");
   return new Response("ok", { status: 200 });
 }
 
