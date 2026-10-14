@@ -77,18 +77,17 @@ export async function scrapeCommand(env, chatId, userId, cmd, arg, owner) {
     return sendMessage(env, chatId, "ارسال پست‌ها به گروه متوقف شد. پست‌ها همچنان ذخیره می‌شن.\nبرای ادامه: /scrape_resume");
   }
   if (cmd === "/scrape_resume") {
-    const skip = normalizeForMatch(arg) === "skip";
-    let skipped = 0;
-    if (skip) {
-      const before = await unsentCount(env);
+    // پیش‌فرض: پست‌های معوقِ دوران توقف ارسال نمی‌شن، فقط پست‌های جدید بعد از ادامه.
+    // /scrape_resume all: معوق‌ها هم ارسال می‌شن (با احتیاط؛ ممکنه چند پست یک‌جا بیاد).
+    const all = normalizeForMatch(arg) === "all";
+    const before = await unsentCount(env);
+    if (!all) {
       await env.DB.prepare("UPDATE posts SET sent_at_utc = ? WHERE sent_at_utc IS NULL").bind(nowUtc()).run();
-      skipped = before;
     }
     await setScrapePaused(env, false);
-    await audit(env, userId, "scrape_resume", skip ? `skip ${skipped}` : "");
-    if (skip) return sendMessage(env, chatId, `ارسال دوباره فعال شد. ${skipped} پست معوق علامت‌گذاری شد (ارسال نمی‌شن). از این به بعد فقط پست‌های جدید می‌رن.`);
-    const pending = await unsentCount(env);
-    return sendMessage(env, chatId, `ارسال دوباره فعال شد. ${pending} پست معوق مونده.\nاگه نمی‌خوای همه‌شون یک‌جا برن: /scrape_resume skip`);
+    await audit(env, userId, "scrape_resume", all ? `all ${before}` : `skip ${before}`);
+    if (all) return sendMessage(env, chatId, `ارسال دوباره فعال شد. ${before} پست معوق در صف ارسال است و به‌زودی می‌رن.`);
+    return sendMessage(env, chatId, `ارسال دوباره فعال شد. ${before} پست معوق از دوران توقف ارسال نشد؛ فقط پست‌های جدید از این به بعد می‌رن.`);
   }
   return null;
 }
