@@ -463,8 +463,12 @@ const letterOf = (kind) => (kind === "note" ? "n" : "e");
 // دکمه‌ی عضویت گروه با درخواست عضویت (creates_join_request). لینک یک بار ساخته و کش می‌شه.
 export async function groupJoinMarkup(env) {
   try {
-    const cached = await env.DB.prepare("SELECT value FROM settings WHERE key = 'group_join_link'").first();
-    let link = cached && cached.value;
+    // لینک ثابت گروه (درخواست عضویت، تأیید دستی ادمین‌ها) از wrangler.toml؛ اگه نبود، لینک ساخته و کش می‌شه
+    let link = env.GROUP_JOIN_LINK || "";
+    if (!link) {
+      const cached = await env.DB.prepare("SELECT value FROM settings WHERE key = 'group_join_link'").first();
+      link = cached && cached.value;
+    }
     if (!link) {
       const g = await env.DB.prepare("SELECT value FROM settings WHERE key = 'group_id'").first();
       if (!g || !g.value) return undefined;
