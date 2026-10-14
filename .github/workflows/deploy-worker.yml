@@ -59,9 +59,18 @@ jobs:
 
       - name: Register Telegram webhook
         run: |
+          set -e
+          URL="https://iaut-bot.rimon24288.workers.dev/tg-webhook"
           SECRET=$(printf "hook:%s" "$TELEGRAM_BOT_TOKEN" | sha256sum | cut -c1-48)
-          curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
-            -d "url=https://iaut-bot.rimon24288.workers.dev/tg-webhook" \
+          # خطای HTTP یا ok:false باید deploy رو قرمز کنه (قبلاً sed همیشه موفق برمی‌گردوند)
+          RESP=$(curl -sS -f -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
+            -d "url=$URL" \
             -d "secret_token=$SECRET" \
             -d "allowed_updates=[\"message\",\"callback_query\",\"channel_post\"]" \
-            -d "drop_pending_updates=true" | sed 's/"ok":true.*/webhook ok/' ; echo
+            -d "drop_pending_updates=true")
+          echo "$RESP" | grep -q '"ok":true' || { echo "setWebhook failed"; exit 1; }
+          # تأیید بعد از ثبت: آدرس webhook همون باشه
+          INFO=$(curl -sS -f "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getWebhookInfo")
+          echo "$INFO" | grep -q "\"url\":\"$URL\"" || { echo "webhook url mismatch"; exit 1; }
+          if echo "$INFO" | grep -q '"last_error_message"'; then echo "warning: Telegram reports a recent webhook error"; fi
+          echo "webhook verified"
