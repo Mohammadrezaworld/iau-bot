@@ -48,6 +48,50 @@ export async function inTehranQuietHours(env, now = Date.now()) {
   return start < end ? hour >= start && hour < end : hour >= start || hour < end;
 }
 
+// توقف دستی ارسال پست‌ها به گروه (تنظیم scrape_paused). پست‌ها همچنان ذخیره می‌شن، فقط ارسال نمی‌شه.
+export async function scrapePaused(env) {
+  return String(await getSetting(env, "scrape_paused", "0")) === "1";
+}
+
+async function setScrapePaused(env, on) {
+  await env.DB.prepare(
+    "INSERT INTO settings (key, value) VALUES ('scrape_paused', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  ).bind(on ? "1" : "0").run();
+}
+
+async function unsentCount(env) {
+  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM posts WHERE sent_at_utc IS NULL").first();
+  return Number(row ? row.n : 0);
+}
+
+// /scrape_pause · /scrape_resume [skip] · /scrape_status (فقط مالک؛ status برای همه‌ی ادمین‌ها)
+export async function scrapeCommand(env, chatId, userId, cmd, arg, owner) {
+  if (cmd === "/scrape_status") {
+    const paused = await scrapePaused(env);
+    return sendMessage(env, chatId, `ارسال به گروه: ${paused ? "متوقف" : "فعال"}\nپست‌های ارسال‌نشده: ${await unsentCount(env)}`);
+  }
+  if (!owner) return sendMessage(env, chatId, "این دستور فقط برای مالک ربات است.");
+  if (cmd === "/scrape_pause") {
+    await setScrapePaused(env, true);
+    await audit(env, userId, "scrape_pause", "");
+    return sendMessage(env, chatId, "ارسال پست‌ها به گروه متوقف شد. پست‌ها همچنان ذخیره می‌شن.\nبرای ادامه: /scrape_resume");
+  }
+  if (cmd === "/scrape_resume") {
+    // پیش‌فرض: پست‌های معوقِ دوران توقف ارسال نمی‌شن، فقط پست‌های جدید بعد از ادامه.
+    // /scrape_resume all: معوق‌ها هم ارسال می‌شن (با احتیاط؛ ممکنه چند پست یک‌جا بیاد).
+    const all = normalizeForMatch(arg) === "all";
+    const before = await unsentCount(env);
+    if (!all) {
+      await env.DB.prepare("UPDATE posts SET sent_at_utc = ? WHERE sent_at_utc IS NULL").bind(nowUtc()).run();
+    }
+    await setScrapePaused(env, false);
+    await audit(env, userId, "scrape_resume", all ? `all ${before}` : `skip ${before}`);
+    if (all) return sendMessage(env, chatId, `ارسال دوباره فعال شد. ${before} پست معوق در صف ارسال است و به‌زودی می‌رن.`);
+    return sendMessage(env, chatId, `ارسال دوباره فعال شد. ${before} پست معوق از دوران توقف ارسال نشد؛ فقط پست‌های جدید از این به بعد می‌رن.`);
+  }
+  return null;
+}
+
 // /set_quiet ۰۲-۰۶ (ساعت شروع و پایان سکوت به وقت تهران)
 export async function setQuietCommand(env, chatId, userId, arg) {
   const m = normalizeDigits(String(arg || "").trim()).match(/^(\d{1,2})\s*-\s*(\d{1,2})$/);
@@ -118,6 +162,7 @@ async function sendBlocksSafely(env, groupId, blocks, label) {
 // پست‌های ارسال‌نشده‌ی یک کانال (یا همه‌ی کانال‌ها) رو به گروه می‌فرسته
 export async function flushPosts(env, source = null, channel = null) {
   if (await inTehranQuietHours(env)) return { skipped: "quiet_hours" };
+  if (await scrapePaused(env)) return { skipped: "paused" };
   const groupId = await getSetting(env, "group_id", "");
   if (!groupId) return { skipped: "no_group" };
 
