@@ -453,6 +453,7 @@ export const DM_NOT_MEMBER = "برای استفاده از خدمات ربات �
 const DM_EXPIRED = "این منو منقضی شده. دوباره /jozve بزن.";
 const DM_NOT_OWNER = "این منو مال تو نیست!";
 const DM_LINK_LIMIT = 40;
+export const DM_MENU_PROMPT = "یکی از گزینه‌ها رو انتخاب کن:";
 // کد نوع در callback: n = جزوه، e = نمونه‌سوال
 const kindOfLetter = (ch) => (ch === "e" ? "exam" : "note");
 const letterOf = (kind) => (kind === "note" ? "n" : "e");
@@ -590,7 +591,7 @@ async function dmFilesView(env, kind, course, prof) {
 // نمای یک مرحله از منو بر اساس callback
 async function dmView(env, data) {
   const t = data[2];
-  if (t === "m") return { text: "کدوم رو می‌خوای؟", markup: dmMainMarkup() };
+  if (t === "m") return { text: DM_MENU_PROMPT, markup: dmMainMarkup() };
   if (t === "n" || t === "e") return dmCategoriesView(env, kindOfLetter(t));
   const kind = kindOfLetter(data[3]);
   const payload = data.slice(4);
@@ -604,12 +605,12 @@ async function dmView(env, data) {
 }
 
 // /start یا /jozve در پیوی کاربر عادی: منوی تازه‌ای ساخته می‌شه و منوی قبلی (اگه بود) پاک می‌شه
-export async function openDmMenu(env, uid) {
+export async function openDmMenu(env, uid, text = DM_MENU_PROMPT) {
   if (!(await dmIsMember(env, uid))) return sendGate(env, uid, DM_NOT_MEMBER);
   const prev = await getDmMenu(env, uid);
   if (prev && prev.msg) await tryDeleteMessage(env, uid, prev.msg);
   const main = dmMainMarkup();
-  const sent = await tg(env, "sendMessage", { chat_id: uid, text: "کدوم رو می‌خوای؟", reply_markup: main });
+  const sent = await tg(env, "sendMessage", { chat_id: uid, text, reply_markup: main });
   const now = nowS();
   await saveDmMenu(env, uid, { msg: sent.message_id, created: now });
   await rememberMsg(env, uid, sent.message_id, DM_TTL);
