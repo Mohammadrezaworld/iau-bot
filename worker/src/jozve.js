@@ -461,3 +461,179 @@ export async function handleJozveRemoveCallback(env, cq) {
   }
   return answer();
 }
+
+// ───── منوی شخصی پیوی (کاربر عادی) ─────
+// فقط دکمه‌ی لینک پست کانال عمومی؛ ربات فایل جزوه رو در پیوی نمی‌فرسته.
+// هر کاربر یک منوی فعال داره؛ جابه‌جایی با ویرایش همان پیام. دسترسی فقط برای اعضای گروه اصلی.
+const DM_TTL = 120; // هر کلیک، ۱۲۰ ثانیه‌ی دیگه می‌ده
+const DM_MAX_LIFE = 240; // سقف عمر منو از لحظه‌ی ساخت
+export const DM_NOT_MEMBER = "برای استفاده از خدمات ربات باید عضو گروه اصلی باشی. بعد از عضویت دوباره /start بزن.";
+const DM_EXPIRED = "این منو منقضی شده. دوباره /jozve بزن.";
+const DM_NOT_OWNER = "این منو مال تو نیست!";
+const DM_LINK_LIMIT = 40;
+// کد نوع در callback: n = جزوه، e = نمونه‌سوال
+const kindOfLetter = (ch) => (ch === "e" ? "exam" : "note");
+const letterOf = (kind) => (kind === "note" ? "n" : "e");
+
+// دکمه‌ها: d:m منوی اصلی · d:n|d:e دسته‌ها · d:c<K><دسته> درس‌ها · d:o<K><درس> استادها · d:f<K><درس>|<استاد> فایل‌ها · d:x بستن
+// K = n (جزوه) یا e (نمونه‌سوال). نام درس و استاد حداکثر ۲۹ بایت، پس callback_data از ۶۴ بایت رد نمی‌شه.
+
+export async function dmIsMember(env, uid) {
+  const groupId = await env.DB.prepare("SELECT value FROM settings WHERE key = 'group_id'").first();
+  if (!groupId || !groupId.value) return false;
+  try {
+    const r = await tg(env, "getChatMember", { chat_id: groupId.value, user_id: uid });
+    const s = r && r.status;
+    if (s === "creator" || s === "administrator" || s === "member") return true;
+    return s === "restricted" && !!r.is_member;
+  } catch (err) {
+    await recordEvent(env, "jozve", "", "error", `getChatMember: ${err && err.message ? err.message : "unknown"}`);
+    return false;
+  }
+}
+
+const dmKey = (uid) => `dm_menu:${uid}`;
+async function getDmMenu(env, uid) {
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = ?").bind(dmKey(uid)).first();
+  if (!row || !row.value) return null;
+  try { return JSON.parse(row.value); } catch { return null; }
+}
+async function saveDmMenu(env, uid, state) {
+  if (!state) {
+    await env.DB.prepare("DELETE FROM settings WHERE key = ?").bind(dmKey(uid)).run();
+    return;
+  }
+  await env.DB.prepare(
+    "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  ).bind(dmKey(uid), JSON.stringify(state)).run();
+}
+
+function dmMainMarkup() {
+  return grid([
+    { text: "جزوه‌ها", callback_data: "d:n" },
+    { text: "نمونه‌سوال", callback_data: "d:e" },
+  ], [{ text: "بستن", callback_data: "d:x" }]);
+}
+
+async function dmCategoriesView(env, kind) {
+  const { results } = await env.DB.prepare(`SELECT DISTINCT course FROM ${TABLE[kind]}`).all();
+  const map = await categoryMap(env);
+  const cats = new Set(results.map((r) => map.get(r.course) || DEFAULT_CATEGORY));
+  const ordered = [...CATEGORY_ORDER.filter((c) => cats.has(c)), ...[...cats].filter((c) => !CATEGORY_ORDER.includes(c))];
+  const text = ordered.length ? `${TITLE[kind]}: کدوم دسته؟` : `فعلاً ${TITLE[kind]}ی ثبت نشده.`;
+  const buttons = ordered
+    .filter((c) => bytes(c) <= MAX_CATEGORY_BYTES)
+    .map((c) => ({ text: c, callback_data: `d:c${letterOf(kind)}${c}` }));
+  return { text, markup: grid(buttons, [{ text: "بازگشت", callback_data: "d:m" }, { text: "بستن", callback_data: "d:x" }]) };
+}
+
+async function dmCoursesView(env, kind, cat) {
+  const { results } = await env.DB.prepare(`SELECT DISTINCT course FROM ${TABLE[kind]} ORDER BY course`).all();
+  const map = await categoryMap(env);
+  const buttons = results
+    .map((r) => r.course)
+    .filter((c) => (map.get(c) || DEFAULT_CATEGORY) === cat && bytes(c) <= MAX_NAME_BYTES)
+    .map((c) => ({ text: c, callback_data: `d:o${letterOf(kind)}${c}` }));
+  return {
+    text: buttons.length ? `${cat}: کدوم درس؟` : "موردی پیدا نشد.",
+    markup: grid(buttons, [{ text: "بازگشت", callback_data: `d:${letterOf(kind)}` }, { text: "بستن", callback_data: "d:x" }]),
+  };
+}
+
+async function dmProfessorsView(env, kind, course) {
+  const { results } = await env.DB.prepare(
+    `SELECT DISTINCT professor FROM ${TABLE[kind]} WHERE course = ? ORDER BY professor`
+  ).bind(course).all();
+  const buttons = results
+    .map((r) => r.professor)
+    .filter((p) => bytes(p) <= MAX_NAME_BYTES)
+    .map((p) => ({ text: p, callback_data: `d:f${letterOf(kind)}${course}|${p}` }));
+  const cat = await categoryOf(env, course);
+  return {
+    text: buttons.length ? `${course}: کدوم استاد؟` : "موردی پیدا نشد.",
+    markup: grid(buttons, [{ text: "بازگشت", callback_data: `d:c${letterOf(kind)}${cat}` }, { text: "بستن", callback_data: "d:x" }]),
+  };
+}
+
+async function dmFilesView(env, kind, course, prof) {
+  const username = env.JOZVE_PUBLIC_USERNAME || "";
+  const { results } = await env.DB.prepare(
+    `SELECT channel_msg_id, title, file_name FROM ${TABLE[kind]} WHERE course = ? AND professor = ? ORDER BY title, id LIMIT ?`
+  ).bind(course, prof, DM_LINK_LIMIT).all();
+  const back = { text: "بازگشت", callback_data: `d:o${letterOf(kind)}${course}` };
+  if (!username) return { text: "لینک کانال تنظیم نشده؛ به ادمین اطلاع بده.", markup: grid([], [back, { text: "بستن", callback_data: "d:x" }]) };
+  if (!results.length) return { text: "موردی پیدا نشد.", markup: grid([], [back, { text: "بستن", callback_data: "d:x" }]) };
+  const rows = results.map((r) => {
+    const label = Array.from(r.title || r.file_name || `پست ${r.channel_msg_id}`).slice(0, 60).join("");
+    return [{ text: label, url: `https://t.me/${username}/${r.channel_msg_id}` }];
+  });
+  return {
+    text: `${course} — ${prof}: روی هر مورد بزن تا در کانال باز شه.`,
+    markup: { inline_keyboard: [...rows, [back, { text: "بستن", callback_data: "d:x" }]] },
+  };
+}
+
+// نمای یک مرحله از منو بر اساس callback
+async function dmView(env, data) {
+  const t = data[2];
+  if (t === "m") return { text: "کدوم رو می‌خوای؟", markup: dmMainMarkup() };
+  if (t === "n" || t === "e") return dmCategoriesView(env, kindOfLetter(t));
+  const kind = kindOfLetter(data[3]);
+  const payload = data.slice(4);
+  if (t === "c") return dmCoursesView(env, kind, payload);
+  if (t === "o") return dmProfessorsView(env, kind, payload);
+  if (t === "f") {
+    const [course, ...rest] = payload.split("|");
+    return dmFilesView(env, kind, course, rest.join("|"));
+  }
+  return null;
+}
+
+// /start یا /jozve در پیوی کاربر عادی: منوی تازه‌ای ساخته می‌شه و منوی قبلی (اگه بود) پاک می‌شه
+export async function openDmMenu(env, uid) {
+  if (!(await dmIsMember(env, uid))) return sendMessage(env, uid, DM_NOT_MEMBER);
+  const prev = await getDmMenu(env, uid);
+  if (prev && prev.msg) await tryDeleteMessage(env, uid, prev.msg);
+  const main = dmMainMarkup();
+  const sent = await tg(env, "sendMessage", { chat_id: uid, text: "کدوم رو می‌خوای؟", reply_markup: main });
+  const now = nowS();
+  await saveDmMenu(env, uid, { msg: sent.message_id, created: now });
+  await rememberMsg(env, uid, sent.message_id, DM_TTL);
+}
+
+// کلیک روی منوی پیوی: فقط صاحب منو و فقط اگه هنوز عضو گروه باشه
+export async function handleDmCallback(env, cq) {
+  const chatId = cq.message.chat.id;
+  const msgId = cq.message.message_id;
+  const uid = cq.from.id;
+  const alert = (text) => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text, show_alert: true });
+  if (String(uid) !== String(chatId)) return alert(DM_NOT_OWNER);
+  const state = await getDmMenu(env, uid);
+  if (!state || state.msg !== msgId || nowS() > state.created + DM_MAX_LIFE) {
+    await tryDeleteMessage(env, chatId, msgId);
+    if (state && state.msg === msgId) await saveDmMenu(env, uid, null);
+    return alert(DM_EXPIRED);
+  }
+  if (!(await dmIsMember(env, uid))) {
+    await tryDeleteMessage(env, chatId, msgId);
+    await saveDmMenu(env, uid, null);
+    return alert(DM_NOT_MEMBER);
+  }
+  const data = cq.data || "";
+  if (data === "d:x") {
+    await tryDeleteMessage(env, chatId, msgId);
+    await saveDmMenu(env, uid, null);
+    return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+  }
+  const view = await dmView(env, data);
+  if (!view) return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+  try {
+    await tg(env, "editMessageText", { chat_id: chatId, message_id: msgId, text: view.text, reply_markup: view.markup });
+  } catch (err) {
+    console.error("dm_edit", err && err.message ? err.message : "unknown");
+  }
+  // هر کلیک TTL رو تمدید می‌کنه، ولی بیشتر از سقف عمر منو نمی‌مونه
+  const left = Math.max(1, state.created + DM_MAX_LIFE - nowS());
+  await rememberMsg(env, chatId, msgId, Math.min(DM_TTL, left));
+  return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+}

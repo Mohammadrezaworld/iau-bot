@@ -14,7 +14,7 @@ import { holidayCommand } from "./holidays.js";
 import { undoLast } from "./undo.js";
 import { setQuietCommand } from "./channels.js";
 import { editList } from "./wizard.js";
-import { jozveListText, jozveRemoveList, jozveCategoryCommand } from "./jozve.js";
+import { jozveListText, jozveRemoveList, jozveCategoryCommand, openDmMenu, dmIsMember, DM_NOT_MEMBER } from "./jozve.js";
 import { scrapeLogText } from "./monitor.js";
 
 // دستورهایی که سطح content هم مجازه
@@ -42,6 +42,46 @@ export async function runPublic(env, chatId, cmd) {
   if (["/events"].includes(cmd)) return sendMessage(env, chatId, await publicEvents(env));
   if (["/updates"].includes(cmd)) return sendMessage(env, chatId, await updatesText(env));
   return answerPublic(env, chatId, cmd);
+}
+
+const DM_WELCOME = [
+  "سلام و خوش اومدی.",
+  "این ربات خدمات گروه رو اینجا، در پیوی، ارائه می‌ده تا گروه شلوغ نشه.",
+  "",
+  "جزوه‌ها و نمونه‌سوال‌ها",
+  "دستور /jozve رو بزن و از دسته، درس و استاد انتخاب کن. هر فایل یک دکمه‌ی لینک داره که مستقیم به پست کانال می‌ره.",
+  "",
+  "دستورهای دیگه:",
+  "/call شماره‌های مفید",
+  "/links لینک‌های مفید",
+  "/events رویدادهای ترم",
+  "/updates آخرین به‌روزرسانی کانال‌ها",
+  "",
+  "تقویم ترم:",
+  "/week هفته‌ی جاری (زوج یا فرد)",
+  "/next هفته‌ی بعد",
+  "/term فهرست هفته‌های ترم",
+  "/left روزهای باقی‌مانده تا پایان کلاس‌ها",
+].join("\n");
+
+// پیام‌های پیوی کاربر عادی (ادمین‌ها به handleAdminMessage می‌رن). خدمات فقط برای اعضای گروه اصلی.
+// بقیه‌ی پیام‌ها بی‌صدا نادیده گرفته می‌شن.
+export async function handleDmUser(env, msg) {
+  if (!msg.from || (await isAdmin(env, msg.from.id))) return false;
+  const chatId = msg.chat.id;
+  const uid = msg.from.id;
+  const { cmd } = parseCmd(msg.text);
+  if (cmd === "/start") {
+    if (!(await dmIsMember(env, uid))) return sendMessage(env, chatId, `${DM_WELCOME}\n\n${DM_NOT_MEMBER}`);
+    await sendMessage(env, chatId, DM_WELCOME);
+    return openDmMenu(env, uid);
+  }
+  if (cmd === "/jozve") return openDmMenu(env, uid);
+  if (PUBLIC_CMDS.includes(cmd)) {
+    if (!(await dmIsMember(env, uid))) return sendMessage(env, chatId, DM_NOT_MEMBER);
+    return runPublic(env, chatId, cmd);
+  }
+  return true;
 }
 
 export function parseCmd(text) {
