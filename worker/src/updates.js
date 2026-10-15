@@ -151,6 +151,9 @@ async function effectsFor(env, row) {
   return results;
 }
 
+// شناسه‌ی update: تلگرام مثبت می‌دهد؛ ارسال خودکار شناسه‌ی منفی و غیرصفر دارد. هر دو باید در صف ثبت باشند (بررسی وجود در retry/resolve).
+export const isUpdateId = (id) => Number.isSafeInteger(id) && id !== 0;
+
 export function describeReviewRow(r) {
   const state = r.state === "processing" ? "پردازش مانده (نتیجه نامشخص)" : r.state === "failed" ? "شکست خورده" : "نیازمند بررسی";
   const parts = [`#${r.update_id} · ${state}`];
@@ -185,8 +188,10 @@ export async function retryUpdate(env, id, dispatch) {
   ).bind(lease, nowS(), id, row.state, row.attempts, id).run();
   if (upd.meta.changes !== 1) return "این درخواست هم‌زمان تغییر کرده؛ دوباره /review را ببین.";
 
+  let out;
+  const payload = JSON.parse(row.payload);
   try {
-    await dispatch(env, JSON.parse(row.payload), { updateId: id, lease });
+    out = await dispatch(env, payload, { updateId: id, lease });
   } catch (err) {
     if (err instanceof LeaseLostError) return "اجرای دیگری این درخواست را گرفته؛ چیزی تغییر نکرد.";
     const amb = err instanceof AmbiguousError;
@@ -195,6 +200,8 @@ export async function retryUpdate(env, id, dispatch) {
     return amb ? "اثری نامشخص ماند؛ قبل از تلاش دوباره /resolve_update را بزن." : "تلاش مجدد هم شکست خورد؛ در فهرست باقی موند.";
   }
   if (!(await markDoneWithRetry(env, id, lease))) return "کار انجام شد، ولی ثبت پایان نشد؛ در /review دیده می‌شه.";
+  // دسته‌ی خودکار: متن واقعی نتیجه (مثلاً «حالت تغییر کرد؛ باقی‌مانده نگه داشته شد») به مالک نشان داده شود
+  if (payload && payload.kind === "auto_batch" && typeof out === "string" && out) return out;
   return "تلاش مجدد انجام شد.";
 }
 

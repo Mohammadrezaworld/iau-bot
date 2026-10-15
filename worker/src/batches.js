@@ -6,7 +6,7 @@
 import { tg } from "./telegram.js";
 import { getSetting } from "./public.js";
 import { recordEvent } from "./monitor.js";
-import { scrapePaused, scrapeMode, inTehranQuietHours, keywordsList, cleanPostText, isJunkPost, buildSections, chunkMessages, sendChunk, sendPhotos } from "./channels.js";
+import { readModeSnapshot, inTehranQuietHours, keywordsList, cleanPostText, isJunkPost, buildSections, chunkMessages, sendChunk, sendPhotos } from "./channels.js";
 import { claimExternal, finishExternal, AmbiguousError, LeaseLostError } from "./effects.js";
 import { setOutcome } from "./outcomes.js";
 import { claimUpdate, markOutcome, markDoneWithRetry, notifyNeedsReview } from "./updates.js";
@@ -24,8 +24,8 @@ function forSend(p) {
 // پست‌های جدید → یک دسته + پیش‌نمایش برای مالک
 export async function prepareBatch(env) {
   if (await inTehranQuietHours(env)) return { skipped: "quiet_hours" };
-  const mode = await scrapeMode(env);
-  if (mode === "stop") return { skipped: "paused" };
+  const snap = await readModeSnapshot(env);
+  if (snap.mode === "stop") return { skipped: "paused" };
   const groupId = await getSetting(env, "group_id", "");
   if (!groupId) return { skipped: "no_group" };
 
@@ -48,8 +48,8 @@ export async function prepareBatch(env) {
   if (!candidates.length) return { prepared: 0 };
 
   // خودکار: فقط پست‌هایی که بعد از فعال‌شدن دیده شدن خودکار می‌رن؛ بقیه (معوق/قدیمی‌تر) فقط پیش‌نمایش دستی
-  const since = Number(await getSetting(env, "scrape_auto_since", "0"));
-  const autoPosts = mode === "auto" ? candidates.filter((p) => Number(p.first_seen_utc) > since) : [];
+  const since = snap.since;
+  const autoPosts = snap.mode === "auto" ? candidates.filter((p) => Number(p.first_seen_utc) > since) : [];
   const manualPosts = candidates.filter((p) => !autoPosts.includes(p));
   let prepared = 0;
   let batch = null;
@@ -58,14 +58,14 @@ export async function prepareBatch(env) {
     prepared += r.prepared; batch = r.batch ?? batch;
   }
   if (autoPosts.length) {
-    const r = await createBatch(env, groupId, autoPosts, true);
+    const r = await createBatch(env, groupId, autoPosts, true, since);
     prepared += r.prepared; batch = r.batch ?? batch;
   }
   return { prepared, batch };
 }
 
 // یک دسته: ساخت، claim اتمی هر پست، و بعد پیش‌نمایش (دستی) یا ارسال خودکار
-async function createBatch(env, groupId, posts, auto) {
+async function createBatch(env, groupId, posts, auto, epoch = 0) {
   const now = nowUtc();
   const created = await env.DB.prepare("INSERT INTO scrape_batches (state, created_utc, expires_utc) VALUES ('pending', ?, ?) RETURNING id")
     .bind(now, now + BATCH_TTL_S).first();
@@ -80,7 +80,7 @@ async function createBatch(env, groupId, posts, auto) {
     return { prepared: 0 };
   }
   if (auto) {
-    const r = await autoApprove(env, bid);
+    const r = await autoApprove(env, bid, epoch);
     return { prepared: claimed.length, batch: bid, auto: r };
   }
   const keywords = await keywordsList(env);
@@ -96,12 +96,13 @@ async function createBatch(env, groupId, posts, auto) {
 
 // ارسال خودکار زیر یک update مصنوعی (lease واقعی). اگه نتیجه مبهم بشه، مثل webhook در /review می‌آد.
 // شناسه‌ی منفی است تا با شناسه‌های تلگرام تداخل نکنه.
-export async function autoApprove(env, bid) {
+export async function autoApprove(env, bid, epoch) {
   const id = -(Math.floor(Date.now() * 1000) + Math.floor(Math.random() * 1000));
-  const payload = { kind: "auto_batch", batch: bid };
+  // epoch = زمان فعال‌سازی خودکار که این دسته تحتش ساخته شد؛ هر ارسال خودکار قبل از تماس تازه دوباره با آن مقایسه می‌شه
+  const payload = { kind: "auto_batch", batch: bid, epoch };
   const claim = await claimUpdate(env, id, JSON.stringify(payload));
   if (claim.status !== "claimed") return { skipped: claim.status };
-  const ctx = { updateId: id, lease: claim.lease };
+  const ctx = { updateId: id, lease: claim.lease, auto: true, epoch };
   let msg = "";
   try {
     msg = await approveBatch(env, ctx, bid);
@@ -154,14 +155,24 @@ async function planUnits(env, bid, posts, keywords) {
 
 // تأیید مالک. ctx: lease همین اجرای webhook (از ارسال بیرونی بدون lease جلوگیری می‌کنه)
 // توقف فعلی: سکوت یا توقف انتشار. قبل از هر تماس تازه با تلگرام دوباره خوانده می‌شه.
-async function stopReason(env) {
+// ctx.auto: اجرای خودکار فقط وقتی مجاز است که حالت هنوز «خودکار» و cutoff همان فعال‌سازی باشد.
+// تغییر به دستی/توقف یا فعال‌سازی دوباره (cutoff جدید) باعث می‌شه باقی‌مانده برای تصمیم صریح مالک بماند.
+async function stopReason(env, ctx) {
   if (await inTehranQuietHours(env)) return "quiet";
-  if (await scrapePaused(env)) return "paused";
+  const snap = await readModeSnapshot(env);
+  if (snap.paused) return "paused";
+  if (ctx && ctx.auto && (snap.mode !== "auto" || snap.since !== Number(ctx.epoch))) return "auth";
   return null;
 }
 const STOP_TEXT = {
   quiet: "ساعت سکوته؛ بعد از ۰۶:۰۰ دوباره بزن.",
-  paused: "ارسال به گروه متوقفه؛ اول /scrape_resume.",
+  paused: "ارسال به گروه متوقفه؛ اول /scrape_settings.",
+  auth: "حالت ارسال خودکار تغییر کرد؛ باقی‌مانده برای تصمیم تو نگه داشته شد (از /review با «ادامه» بزن).",
+};
+const WHY_TEXT = {
+  quiet: "ساعت سکوت شروع شد",
+  paused: "ارسال متوقف است",
+  auth: "حالت خودکار تغییر کرد",
 };
 
 const photoKey = (bid, sectionKey) => `scrape_batch:${bid}:photo:${sectionKey}`;
@@ -197,7 +208,7 @@ export async function approveBatch(env, ctx, bid) {
   if (!b) return "این دسته پیدا نشد.";
   if (b.state === "sent") return "این دسته قبلاً ارسال شده.";
   if (["rejected", "expired", "empty"].includes(b.state)) return `این دسته ${STATE_FA[b.state]} است.`;
-  const early = await stopReason(env);
+  const early = await stopReason(env, ctx);
   if (early) return STOP_TEXT[early];
   if (b.state === "pending") {
     if (nowUtc() > b.expires_utc) {
@@ -231,7 +242,7 @@ export async function approveBatch(env, ctx, bid) {
     const key = queue[qi];
     const unitPosts = byUnit.get(key);
     const ids = unitPosts.map((p) => p.id);
-    stoppedBy = await stopReason(env);
+    stoppedBy = await stopReason(env, ctx);
     if (stoppedBy) break;
     const claim = await claimExternal(env, ctx, key, "scrape_batch");
     if (claim.status === "lease_lost") throw new LeaseLostError();
@@ -240,14 +251,20 @@ export async function approveBatch(env, ctx, bid) {
     // نتیجه‌ی نامشخص قبلی: هرگز خودکار دوباره فرستاده نمی‌شه؛ تصمیم با مالک در /review
     if (claim.status === "ambiguous") continue;
     // بعد از claim هم بررسی: اگه سکوت شروع شده، تماسی انجام نشده و این واحد قطعاً نرفته
-    stoppedBy = await stopReason(env);
+    stoppedBy = await stopReason(env, ctx);
     if (stoppedBy) { await finishExternal(env, ctx, key, { ok: false, error: `not_sent_${stoppedBy}` }); break; }
 
     const blocks = buildSections(unitPosts, keywords).flatMap((s) => s.blocks);
     let msgId;
     try {
-      msgId = await sendChunk(env, groupId, blocks, `batch ${bid}`);
+      msgId = await sendChunk(env, groupId, blocks, `batch ${bid}`, () => stopReason(env, ctx));
     } catch (err) {
+      if (err && err.stopped) {
+        // HTML رد شده و تلاش ساده قبل از تماس متوقف شد: هیچ پیامی نرفته؛ واحد قابل ادامه می‌ماند
+        await finishExternal(env, ctx, key, { ok: false, error: `not_sent_${err.stopped}` });
+        stoppedBy = err.stopped;
+        break;
+      }
       if (err && err.contentRefused) {
         // محتوای این واحد در هر دو قالب رد شد؛ هیچ پیامی تحویل نشده
         await finishExternal(env, ctx, key, { ok: false, error: err.message });
@@ -283,13 +300,13 @@ export async function approveBatch(env, ctx, bid) {
   // عکس‌ها: هر بخش یک اثر مستقل. موفقیت متن، عکس ناتمام را از صف خارج نمی‌کنه.
   if (!stoppedBy && !busy) {
     for (const sec of photoSections(await batchPosts(env, bid, false))) {
-      stoppedBy = await stopReason(env);
+      stoppedBy = await stopReason(env, ctx);
       if (stoppedBy) break;
       const pkey = photoKey(bid, sec.key);
       const claim = await claimExternal(env, ctx, pkey, "scrape_batch");
       if (claim.status === "lease_lost") throw new LeaseLostError();
       if (claim.status !== "claimed") continue; // done: کامل؛ busy/ambiguous: بماند برای مالک یا اجرای دیگر
-      stoppedBy = await stopReason(env);
+      stoppedBy = await stopReason(env, ctx);
       if (stoppedBy) { await finishExternal(env, ctx, pkey, { ok: false, error: `not_sent_${stoppedBy}` }); break; }
       let msgId;
       try {
@@ -319,7 +336,7 @@ export async function approveBatch(env, ctx, bid) {
     return [`ارسال شد: ${sentNow} پست.`, refusedNote].filter(Boolean).join(" ");
   }
   // دسته sending می‌مونه؛ از /review با «ادامه» قابل بازیابیه
-  const why = stoppedBy ? (stoppedBy === "quiet" ? "ساعت سکوت شروع شد" : "ارسال متوقف است") : "";
+  const why = stoppedBy ? WHY_TEXT[stoppedBy] : "";
   return [
     `ارسال ناقص: ${sentNow} پست رفت، ${leftTexts} پست و ${leftPhotos} بخش عکس هنوز نرفته.`,
     why ? `${why}؛ باقی‌مانده نگه داشته شد.` : "",

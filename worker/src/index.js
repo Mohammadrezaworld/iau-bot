@@ -16,7 +16,7 @@ import { buildBackup } from "./admin.js";
 import { sendJsonDocument, tg } from "./telegram.js";
 import { handleMetroCallback, handleMetroUploadCallback, cleanupMetroMessages } from "./metro.js";
 import { handleScrapeReport, recordEvent, reportError, checkScrapeHealth, sendDailySummary, redact } from "./monitor.js";
-import { claimUpdate, markOutcome, markDoneWithRetry, notifyNeedsReview, retryUpdate, resolveUpdate, listReview, describeReviewRow, MAX_AUTO_ATTEMPTS } from "./updates.js";
+import { claimUpdate, markOutcome, markDoneWithRetry, notifyNeedsReview, retryUpdate, resolveUpdate, listReview, describeReviewRow, MAX_AUTO_ATTEMPTS, isUpdateId } from "./updates.js";
 
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
@@ -193,7 +193,8 @@ async function dispatchUpdate(env, update, ctx = null) {
   // ارسال خودکار دسته: همان مسیر ایمن ادامه (claim/lease و خطاهای مبهم)
   if (update && update.kind === "auto_batch") {
     if (!ctx) return "این دسته را از /review با «ادامه» بزن.";
-    return approveBatch(env, ctx, Number(update.batch));
+    // هر اجرای خودکار (حتی تلاش مجدد از /review) فقط با مجوز همان فعال‌سازی ادامه می‌دهد
+    return approveBatch(env, { ...ctx, auto: true, epoch: Number(update.epoch) }, Number(update.batch));
   }
   if (update && update.callback_query) {
     const cq = update.callback_query;
@@ -365,13 +366,13 @@ async function handleOwnerCommand(env, msg) {
   }
   if (cmd === "/retry_update") {
     const id = Number(arg.trim());
-    const text = Number.isSafeInteger(id) && id > 0 ? await retryUpdate(env, id, dispatchUpdate) : "فرمت: /retry_update <شناسه>";
+    const text = isUpdateId(id) ? await retryUpdate(env, id, dispatchUpdate) : "فرمت: /retry_update <شناسه>";
     return tg(env, "sendMessage", { chat_id: chatId, text });
   }
   if (cmd === "/resolve_update") {
     const [rawId, decision] = arg.trim().split(/\s+/);
     const id = Number(rawId);
-    if (!Number.isSafeInteger(id) || id <= 0 || !["applied", "not_applied"].includes(decision)) {
+    if (!isUpdateId(id) || !["applied", "not_applied"].includes(decision)) {
       return tg(env, "sendMessage", { chat_id: chatId, text: "فرمت: /resolve_update <شناسه> applied|not_applied\napplied: اثر انجام شده · not_applied: اثری نبوده (بعدش می‌شه دوباره اجرا کرد)" });
     }
     return tg(env, "sendMessage", { chat_id: chatId, text: await resolveUpdate(env, id, decision) });
@@ -384,7 +385,7 @@ async function handleReviewCallback(env, cq) {
   const [, action, rawId] = String(cq.data).split(":");
   const id = Number(rawId);
   let text;
-  if (!Number.isSafeInteger(id) || id <= 0) text = "نامعتبر";
+  if (!isUpdateId(id)) text = "نامعتبر";
   else if (action === "r") text = await retryUpdate(env, id, dispatchUpdate);
   else if (action === "a") text = await resolveUpdate(env, id, "applied");
   else if (action === "n") text = await resolveUpdate(env, id, "not_applied");

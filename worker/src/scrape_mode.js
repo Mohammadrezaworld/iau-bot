@@ -2,7 +2,7 @@
 // فقط اسکرپ؛ یادآوری رویدادها مستقل است. تغییر فقط برای مالک، در هر callback نهایی بررسی می‌شه.
 import { tg } from "./telegram.js";
 import { isOwner, audit } from "./admin.js";
-import { scrapeMode, setScrapePaused } from "./channels.js";
+import { scrapeMode, readModeSnapshot } from "./channels.js";
 import { prepareBatch } from "./batches.js";
 import { setOutcome } from "./outcomes.js";
 
@@ -24,6 +24,17 @@ async function skipBacklog(env) {
   await env.DB.prepare("UPDATE scrape_batches SET state = 'rejected' WHERE state = 'pending'").run();
 }
 
+// نوشتن حالت در یک تراکنش (D1 batch): cutoff و حالت یا با هم نوشته می‌شن یا هیچ‌کدام.
+// خواننده (readModeSnapshot) هرگز auto=1 را با cutoff قدیمی نمی‌بیند.
+async function writeMode(env, { auto, paused, since }) {
+  const up = (k, v) => env.DB.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(k, String(v));
+  const stmts = [];
+  if (since !== undefined) stmts.push(up("scrape_auto_since", since));
+  if (auto !== undefined) stmts.push(up("scrape_auto", auto ? "1" : "0"));
+  if (paused !== undefined) stmts.push(up("scrape_paused", paused ? "1" : "0"));
+  await env.DB.batch(stmts);
+}
+
 // تغییر حالت. actorId باید مالک باشه (بررسی در همین تابع هم تکرار می‌شه).
 // backlog (فقط وقتی از توقف خارج می‌شیم): 'new' = معوق‌ها کنار گذاشته؛ 'sug' = معوق‌ها برای تأیید پیشنهاد.
 // تغییر حالت هیچ دسته‌ی sending یا نتیجه‌ی مبهمی را آزاد یا دوباره ارسال نمی‌کند.
@@ -35,18 +46,43 @@ export async function changeMode(env, actorId, target, backlog = null) {
   if (from === "stop" && target !== "stop") {
     if (!["new", "sug"].includes(backlog)) return { ok: false, text: "اول مشخص کن پست‌های معوق چه شوند." };
     if (backlog === "new") await skipBacklog(env);
-    await setScrapePaused(env, false);
   }
-  if (target === "stop") await setScrapePaused(env, true);
-  if (target === "auto") {
-    await setSetting(env, "scrape_auto", "1");
-    // فقط پست‌های دیده‌شده بعد از این لحظه خودکار می‌رن
-    await setSetting(env, "scrape_auto_since", nowS());
-  }
-  if (target === "manual") await setSetting(env, "scrape_auto", "0");
+  if (target === "auto") await writeMode(env, { since: nowS(), auto: true, paused: false });
+  else if (target === "stop") await writeMode(env, { paused: true });
+  else await writeMode(env, { auto: false, paused: false });
   await audit(env, actorId, "scrape_mode", `${from}->${target}${backlog ? ` backlog=${backlog}` : ""}`);
   if (from === "stop" && backlog === "sug") await prepareBatch(env).catch(() => {});
   return { ok: true, text: `حالت شد: ${LABEL[target]}.` };
+}
+
+// تأیید دوم خودکار: نشانه‌ی یک‌بار مصرف و زمان‌دار. انصراف یا هر دکمه‌ی دیگر آن را باطل می‌کند.
+const TOKEN_TTL_S = 300;
+async function issueAutoToken(env) {
+  const t = String(nowS());
+  await setSetting(env, "scrape_auto_token", t);
+  return t;
+}
+async function consumeAutoToken(env, t) {
+  if (!/^\d+$/.test(String(t || ""))) return false;
+  const r = await env.DB.prepare("UPDATE settings SET value = '' WHERE key = 'scrape_auto_token' AND value = ?").bind(String(t)).run();
+  return r.meta.changes === 1 && nowS() - Number(t) <= TOKEN_TTL_S;
+}
+async function clearAutoToken(env) {
+  await setSetting(env, "scrape_auto_token", "");
+}
+
+// /scrape_resume (فقط مالک): همان سرویس پنل. پیش‌فرض: معوق‌ها کنار گذاشته، فقط پست‌های جدید.
+// all: معوق‌ها فقط پیشنهاد برای تأیید؛ هیچ‌وقت خودکار منتشر نمی‌شوند.
+export async function resumeCommand(env, chatId, userId, arg, owner) {
+  if (!owner) return tg(env, "sendMessage", { chat_id: chatId, text: "این دستور فقط برای مالک ربات است." });
+  const snap = await readModeSnapshot(env);
+  if (snap.mode !== "stop") return tg(env, "sendMessage", { chat_id: chatId, text: `ارسال به گروه الان متوقف نیست (حالت: ${LABEL[snap.mode]}). تغییر حالت از /scrape_settings.` });
+  const all = String(arg || "").trim().toLowerCase() === "all";
+  const r = await changeMode(env, userId, "manual", all ? "sug" : "new");
+  const note = all
+    ? "معوق‌ها فقط برای تأیید تو پیش‌نمایش می‌شن؛ هیچ‌کدام خودکار منتشر نمی‌شود."
+    : "معوق‌های دوران توقف کنار گذاشته شدند؛ فقط پست‌های جدید از این به بعد پیشنهاد می‌شن.";
+  return tg(env, "sendMessage", { chat_id: chatId, text: r.ok ? `${r.text} ${note}` : r.text, disable_web_page_preview: true });
 }
 
 async function panelText(env) {
@@ -84,7 +120,8 @@ export async function scrapeSettingsCommand(env, chatId) {
 }
 
 // دکمه‌های ss:*. هر callback دوباره مالک و پیوی را چک می‌کند (dispatch هم چک می‌کند).
-// ss:manual / ss:stop / ss:auto(نمایش پیامد) / ss:autoy (تأیید دوم) / ss:go:<target>:<backlog>
+// ss:manual / ss:stop / ss:m (لغو) توکن تأیید خودکار را باطل می‌کنند.
+// ss:auto → تأیید دوم با نشانه؛ ss:autoy:<t> و ss:go:auto:<backlog>:<t> فقط با نشانه‌ی زنده و یک‌بار مصرف.
 export async function handleScrapeSettingsCallback(env, cq, ctx) {
   const owner = await isOwner(env, cq.from.id);
   const chatId = cq.message.chat.id;
@@ -94,6 +131,7 @@ export async function handleScrapeSettingsCallback(env, cq, ctx) {
   if (!owner) return ack("");
   const mode = await scrapeMode(env);
   const btn = (text, data) => ({ text, callback_data: data });
+  if (["m", "manual", "stop"].includes(action)) await clearAutoToken(env);
 
   if (action === "m") {
     return tg(env, "sendMessage", { chat_id: chatId, text: await panelText(env), reply_markup: panelMarkup(await scrapeMode(env)), disable_web_page_preview: true });
@@ -112,20 +150,22 @@ export async function handleScrapeSettingsCallback(env, cq, ctx) {
   if (action === "auto") {
     const consequences = "ارسال خودکار:\n• پست‌های جدیدی که بعد از فعال‌سازی دیده می‌شن، بدون تأیید به گروه می‌روند.\n• دسته‌های منتظر قبلی و پست‌های معوق خودکار منتشر نمی‌شوند.\n• در ساعت سکوت ارسالی نیست و توقف انتشار همه‌ی ارسال‌ها را متوقف می‌کند.";
     if (mode === "auto") return ack("همین حالت از قبل فعال است.");
+    const t = await issueAutoToken(env);
     if (mode === "stop") {
       return tg(env, "sendMessage", {
         chat_id: chatId,
         text: `${consequences}\n\nاز توقف خارج می‌شی. معوق‌ها چه شوند؟`,
-        reply_markup: { inline_keyboard: [[btn("تأیید: خودکار، فقط پست‌های جدید", "ss:go:auto:new")], [btn("تأیید: خودکار، معوق‌ها برای تأیید", "ss:go:auto:sug")], [btn("انصراف", "ss:m")]] },
+        reply_markup: { inline_keyboard: [[btn("تأیید: خودکار، فقط پست‌های جدید", `ss:go:auto:new:${t}`)], [btn("تأیید: خودکار، معوق‌ها برای تأیید", `ss:go:auto:sug:${t}`)], [btn("انصراف", "ss:m")]] },
       }).then(() => ack("تأیید دوم لازم است"));
     }
     return tg(env, "sendMessage", {
       chat_id: chatId,
       text: `${consequences}\n\nبرای فعال‌سازی یک بار دیگر تأیید کن.`,
-      reply_markup: { inline_keyboard: [[btn("تأیید دوم: فعال‌سازی خودکار", "ss:autoy")], [btn("انصراف", "ss:m")]] },
+      reply_markup: { inline_keyboard: [[btn("تأیید دوم: فعال‌سازی خودکار", `ss:autoy:${t}`)], [btn("انصراف", "ss:m")]] },
     }).then(() => ack("تأیید دوم لازم است"));
   }
   if (action === "autoy") {
+    if (!(await consumeAutoToken(env, parts[2]))) return ack("این تأیید منقضی یا استفاده شده. دوباره از /scrape_settings شروع کن.");
     const r = await changeMode(env, cq.from.id, "auto");
     return ack(r.text);
   }
@@ -133,6 +173,7 @@ export async function handleScrapeSettingsCallback(env, cq, ctx) {
     const target = parts[2];
     const backlog = parts[3];
     if (mode !== "stop") return ack("این گزینه الان لازم نیست.");
+    if (target === "auto" && !(await consumeAutoToken(env, parts[4]))) return ack("این تأیید منقضی یا استفاده شده. دوباره از /scrape_settings شروع کن.");
     const r = await changeMode(env, cq.from.id, target, backlog);
     return ack(r.text);
   }
