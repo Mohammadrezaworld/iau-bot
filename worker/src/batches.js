@@ -6,9 +6,10 @@
 import { tg } from "./telegram.js";
 import { getSetting } from "./public.js";
 import { recordEvent } from "./monitor.js";
-import { scrapePaused, inTehranQuietHours, keywordsList, cleanPostText, isJunkPost, buildSections, chunkMessages, sendChunk, sendPhotos } from "./channels.js";
+import { scrapePaused, scrapeMode, inTehranQuietHours, keywordsList, cleanPostText, isJunkPost, buildSections, chunkMessages, sendChunk, sendPhotos } from "./channels.js";
 import { claimExternal, finishExternal, AmbiguousError, LeaseLostError } from "./effects.js";
 import { setOutcome } from "./outcomes.js";
+import { claimUpdate, markOutcome, markDoneWithRetry, notifyNeedsReview } from "./updates.js";
 
 export const BATCH_TTL_S = 12 * 3600;
 const CONTENT_ERROR = /too long|text is empty|parse entities|message text/i;
@@ -23,7 +24,8 @@ function forSend(p) {
 // پست‌های جدید → یک دسته + پیش‌نمایش برای مالک
 export async function prepareBatch(env) {
   if (await inTehranQuietHours(env)) return { skipped: "quiet_hours" };
-  if (await scrapePaused(env)) return { skipped: "paused" };
+  const mode = await scrapeMode(env);
+  if (mode === "stop") return { skipped: "paused" };
   const groupId = await getSetting(env, "group_id", "");
   if (!groupId) return { skipped: "no_group" };
 
@@ -45,20 +47,42 @@ export async function prepareBatch(env) {
   }
   if (!candidates.length) return { prepared: 0 };
 
+  // خودکار: فقط پست‌هایی که بعد از فعال‌شدن دیده شدن خودکار می‌رن؛ بقیه (معوق/قدیمی‌تر) فقط پیش‌نمایش دستی
+  const since = Number(await getSetting(env, "scrape_auto_since", "0"));
+  const autoPosts = mode === "auto" ? candidates.filter((p) => Number(p.first_seen_utc) > since) : [];
+  const manualPosts = candidates.filter((p) => !autoPosts.includes(p));
+  let prepared = 0;
+  let batch = null;
+  if (manualPosts.length) {
+    const r = await createBatch(env, groupId, manualPosts, false);
+    prepared += r.prepared; batch = r.batch ?? batch;
+  }
+  if (autoPosts.length) {
+    const r = await createBatch(env, groupId, autoPosts, true);
+    prepared += r.prepared; batch = r.batch ?? batch;
+  }
+  return { prepared, batch };
+}
+
+// یک دسته: ساخت، claim اتمی هر پست، و بعد پیش‌نمایش (دستی) یا ارسال خودکار
+async function createBatch(env, groupId, posts, auto) {
   const now = nowUtc();
   const created = await env.DB.prepare("INSERT INTO scrape_batches (state, created_utc, expires_utc) VALUES ('pending', ?, ?) RETURNING id")
     .bind(now, now + BATCH_TTL_S).first();
   const bid = created.id;
   // claim اتمی: هر پست فقط با INSERT OR IGNORE (کلید post_id) به یک دسته می‌ره؛ دو اجرای هم‌زمان مجموعه‌های جدا می‌گیرن
-  const res = await env.DB.batch(candidates.map((p) =>
+  const res = await env.DB.batch(posts.map((p) =>
     env.DB.prepare("INSERT OR IGNORE INTO scrape_batch_items (post_id, batch_id) VALUES (?, ?)").bind(p.id, bid)
   ));
-  const claimed = candidates.filter((_, i) => res[i].meta.changes === 1);
+  const claimed = posts.filter((_, i) => res[i].meta.changes === 1);
   if (!claimed.length) {
     await env.DB.prepare("UPDATE scrape_batches SET state = 'empty' WHERE id = ?").bind(bid).run();
     return { prepared: 0 };
   }
-
+  if (auto) {
+    const r = await autoApprove(env, bid);
+    return { prepared: claimed.length, batch: bid, auto: r };
+  }
   const keywords = await keywordsList(env);
   const sections = buildSections(claimed.map(forSend), keywords);
   try {
@@ -68,6 +92,30 @@ export async function prepareBatch(env) {
     await recordEvent(env, "system", "", "error", `batch ${bid} preview: ${err && err.message ? err.message : "unknown"}`);
   }
   return { prepared: claimed.length, batch: bid };
+}
+
+// ارسال خودکار زیر یک update مصنوعی (lease واقعی). اگه نتیجه مبهم بشه، مثل webhook در /review می‌آد.
+// شناسه‌ی منفی است تا با شناسه‌های تلگرام تداخل نکنه.
+export async function autoApprove(env, bid) {
+  const id = -(Math.floor(Date.now() * 1000) + Math.floor(Math.random() * 1000));
+  const payload = { kind: "auto_batch", batch: bid };
+  const claim = await claimUpdate(env, id, JSON.stringify(payload));
+  if (claim.status !== "claimed") return { skipped: claim.status };
+  const ctx = { updateId: id, lease: claim.lease };
+  let msg = "";
+  try {
+    msg = await approveBatch(env, ctx, bid);
+    await markDoneWithRetry(env, id, ctx.lease);
+  } catch (err) {
+    if (err && err.name === "LeaseLostError") return { lease_lost: true };
+    const text = err && err.message ? err.message : "unknown";
+    const reason = err && err.name === "AmbiguousError" ? "ambiguous" : "error";
+    await markOutcome(env, id, ctx.lease, "needs_review", text, reason).catch(() => console.error("mark_outcome_failed", id));
+    await notifyNeedsReview(env, id, payload, text, reason).catch(() => console.error("notify_review_failed", id));
+    return { needs_review: reason };
+  }
+  await tg(env, "sendMessage", { chat_id: env.OWNER_ID, text: `ارسال خودکار (دسته ${bid}): ${msg}`, disable_web_page_preview: true }).catch(() => {});
+  return { sent: msg };
 }
 
 // پیش‌نمایش عین همون چیزیه که گروه می‌بینه؛ دکمه‌ها زیر آخرین بخش
@@ -105,6 +153,43 @@ async function planUnits(env, bid, posts, keywords) {
 }
 
 // تأیید مالک. ctx: lease همین اجرای webhook (از ارسال بیرونی بدون lease جلوگیری می‌کنه)
+// توقف فعلی: سکوت یا توقف انتشار. قبل از هر تماس تازه با تلگرام دوباره خوانده می‌شه.
+async function stopReason(env) {
+  if (await inTehranQuietHours(env)) return "quiet";
+  if (await scrapePaused(env)) return "paused";
+  return null;
+}
+const STOP_TEXT = {
+  quiet: "ساعت سکوته؛ بعد از ۰۶:۰۰ دوباره بزن.",
+  paused: "ارسال به گروه متوقفه؛ اول /scrape_resume.",
+};
+
+const photoKey = (bid, sectionKey) => `scrape_batch:${bid}:photo:${sectionKey}`;
+
+// پست‌های دسته؛ onlyUnsent: فقط آن‌هایی که متنشان هنوز نرفته
+async function batchPosts(env, bid, onlyUnsent) {
+  const { results } = await env.DB.prepare(
+    `SELECT p.*, bi.unit AS unit FROM posts p JOIN scrape_batch_items bi ON bi.post_id = p.id
+     WHERE bi.batch_id = ?${onlyUnsent ? " AND p.sent_at_utc IS NULL" : ""} ORDER BY p.source, p.channel, p.first_seen_utc, p.id`
+  ).bind(bid).all();
+  return results;
+}
+// بخش‌های عکس از همه‌ی پست‌های دسته (حتی آن‌هایی که متنشان قبلاً رفته)؛ متن عکس از پست‌های معوق نمی‌آد
+function photoSections(posts) {
+  return buildSections(posts.map(forSend), []).filter((s) => s.photos.length).map((s) => ({ key: s.key, label: s.label, photos: s.photos }));
+}
+// بخش‌های عکسی که تأیید «done» ندارن (صرف‌نظرشده هم done حساب می‌شه)
+async function pendingPhotoSections(env, bid) {
+  const out = [];
+  for (const sec of photoSections(await batchPosts(env, bid, false))) {
+    const e = await env.DB.prepare("SELECT state FROM effects WHERE op_key = ?").bind(photoKey(bid, sec.key)).first();
+    if (!e || e.state !== "done") out.push({ ...sec, state: e ? e.state : "none" });
+  }
+  return out;
+}
+
+// تأیید مالک یا ادامه‌ی دسته. ctx: lease همین اجرای webhook.
+// هر واحد = یک پیام = یک اثر. قبل از هر تماس تازه: سکوت/توقف بررسی می‌شه؛ نتیجه‌ی مبهم هرگز خودکار تکرار نمی‌شه.
 export async function approveBatch(env, ctx, bid) {
   const groupId = await getSetting(env, "group_id", "");
   if (!groupId) return "گروه تنظیم نشده.";
@@ -112,57 +197,76 @@ export async function approveBatch(env, ctx, bid) {
   if (!b) return "این دسته پیدا نشد.";
   if (b.state === "sent") return "این دسته قبلاً ارسال شده.";
   if (["rejected", "expired", "empty"].includes(b.state)) return `این دسته ${STATE_FA[b.state]} است.`;
-  if (await scrapePaused(env)) return "ارسال به گروه متوقفه؛ اول /scrape_resume.";
-  if (await inTehranQuietHours(env)) return "ساعت سکوته؛ بعد از ۰۶:۰۰ دوباره بزن.";
+  const early = await stopReason(env);
+  if (early) return STOP_TEXT[early];
   if (b.state === "pending") {
     if (nowUtc() > b.expires_utc) {
       await expireBatches(env);
       return "این دسته منقضی شده؛ پست‌هاش در دسته‌ی بعدی می‌آن.";
     }
-    // شرطی: اگه دو کلیک هم‌زمان باشه، یکی برنده می‌شه؛ بقیه‌ی کار با claim بخش‌ها امنه
-    await env.DB.prepare("UPDATE scrape_batches SET state = 'sending' WHERE id = ? AND state = 'pending'").bind(bid).run();
+    // CAS: فقط یک اجرا pending→sending را می‌بره. اگه در این فاصله رد/انقضا شد، هیچ ارسالی نمی‌شه.
+    const up = await env.DB.prepare("UPDATE scrape_batches SET state = 'sending' WHERE id = ? AND state = 'pending'").bind(bid).run();
+    if (up.meta.changes !== 1) {
+      const cur = await env.DB.prepare("SELECT state FROM scrape_batches WHERE id = ?").bind(bid).first();
+      if (!cur || cur.state !== "sending") return `این دسته ${STATE_FA[cur ? cur.state : ""] || "در دسترس نیست"}؛ چیزی ارسال نشد.`;
+    }
   }
 
-  const { results } = await env.DB.prepare(
-    `SELECT p.*, bi.unit AS unit FROM posts p JOIN scrape_batch_items bi ON bi.post_id = p.id
-     WHERE bi.batch_id = ? AND p.sent_at_utc IS NULL ORDER BY p.source, p.channel, p.first_seen_utc, p.id`
-  ).bind(bid).all();
-  if (!results.length) {
-    await env.DB.prepare("UPDATE scrape_batches SET state = 'sent' WHERE id = ?").bind(bid).run();
-    return "چیزی برای ارسال نمونده.";
-  }
   const keywords = await keywordsList(env);
-  const unplanned = results.filter((r) => !r.unit).map(forSend);
+  const unplanned = (await batchPosts(env, bid, true)).filter((r) => !r.unit).map(forSend);
   if (unplanned.length) await planUnits(env, bid, unplanned, keywords);
-
-  // بخش‌ها به ترتیب کلید (شماره‌ی بخش)
-  const reloaded = await env.DB.prepare(
-    `SELECT p.*, bi.unit AS unit FROM posts p JOIN scrape_batch_items bi ON bi.post_id = p.id
-     WHERE bi.batch_id = ? AND p.sent_at_utc IS NULL`
-  ).bind(bid).all();
   const byUnit = new Map();
-  for (const r of reloaded.results) {
+  for (const r of await batchPosts(env, bid, true)) {
+    if (!r.unit) continue;
     if (!byUnit.has(r.unit)) byUnit.set(r.unit, []);
     byUnit.get(r.unit).push(forSend(r));
   }
-  const unitKeys = [...byUnit.keys()].sort((a, b) => Number(a.split(":").pop()) - Number(b.split(":").pop()));
+  const queue = [...byUnit.keys()].sort((x, y) => Number(x.split(":").pop()) - Number(y.split(":").pop()));
 
   let sentNow = 0;
-  let ambiguousLeft = 0;
-  for (const key of unitKeys) {
+  let refused = 0;
+  let stoppedBy = null;
+  let busy = false;
+  for (let qi = 0; qi < queue.length; qi++) {
+    const key = queue[qi];
     const unitPosts = byUnit.get(key);
     const ids = unitPosts.map((p) => p.id);
+    stoppedBy = await stopReason(env);
+    if (stoppedBy) break;
     const claim = await claimExternal(env, ctx, key, "scrape_batch");
     if (claim.status === "lease_lost") throw new LeaseLostError();
     if (claim.status === "done") { await markSent(env, ids); continue; }
-    if (claim.status === "busy") return "این دسته هم‌اکنون در حال ارساله؛ چیزی دوبار فرستاده نشد.";
+    if (claim.status === "busy") { busy = true; break; }
     // نتیجه‌ی نامشخص قبلی: هرگز خودکار دوباره فرستاده نمی‌شه؛ تصمیم با مالک در /review
-    if (claim.status === "ambiguous") { ambiguousLeft += ids.length; continue; }
+    if (claim.status === "ambiguous") continue;
+    // بعد از claim هم بررسی: اگه سکوت شروع شده، تماسی انجام نشده و این واحد قطعاً نرفته
+    stoppedBy = await stopReason(env);
+    if (stoppedBy) { await finishExternal(env, ctx, key, { ok: false, error: `not_sent_${stoppedBy}` }); break; }
+
     const blocks = buildSections(unitPosts, keywords).flatMap((s) => s.blocks);
     let msgId;
     try {
       msgId = await sendChunk(env, groupId, blocks, `batch ${bid}`);
     } catch (err) {
+      if (err && err.contentRefused) {
+        // محتوای این واحد در هر دو قالب رد شد؛ هیچ پیامی تحویل نشده
+        await finishExternal(env, ctx, key, { ok: false, error: err.message });
+        if (unitPosts.length > 1) {
+          // تجزیه به واحدهای تک‌پست با کلید پایدار؛ هر کدام اثر جدای خودش را دارد
+          const subs = [];
+          for (const p of unitPosts) {
+            const sk = `${key}:p${p.id}`;
+            await env.DB.prepare("UPDATE scrape_batch_items SET unit = ? WHERE batch_id = ? AND post_id = ?").bind(sk, bid, p.id).run();
+            byUnit.set(sk, [p]);
+            subs.push(sk);
+          }
+          queue.splice(qi + 1, 0, ...subs);
+        } else {
+          await closeRefused(env, ids);
+          refused += ids.length;
+        }
+        continue;
+      }
       if (err && err.refused) {
         await finishExternal(env, ctx, key, { ok: false, error: err.message });
         throw err;
@@ -176,42 +280,79 @@ export async function approveBatch(env, ctx, bid) {
     sentNow += ids.length;
   }
 
-  // عکس‌ها: یک آلبوم برای هر کانال؛ خطای قطعی عکس، متن را خراب نمی‌کنه
-  const sections = buildSections(reloaded.results.map(forSend), keywords);
-  for (const sec of sections) {
-    if (!sec.photos.length) continue;
-    const key = `scrape_batch:${bid}:photo:${sec.key}`;
-    const claim = await claimExternal(env, ctx, key, "scrape_batch");
-    if (claim.status === "lease_lost") throw new LeaseLostError();
-    if (claim.status !== "claimed") continue; // done/busy: قبلاً فرستاده شده یا در حال ارسال
-    try {
-      const msgId = await sendPhotos(env, groupId, sec.label, sec.photos);
-      const recorded = await finishExternal(env, ctx, key, { ok: true, msgId, result: `photos ${sec.label}` });
-      if (!recorded) throw new AmbiguousError(key);
-    } catch (err) {
-      if (err && err.refused) {
-        await finishExternal(env, ctx, key, { ok: false, error: err.message });
-        console.error("photo_error", err.message);
-      } else {
-        throw new AmbiguousError(key);
+  // عکس‌ها: هر بخش یک اثر مستقل. موفقیت متن، عکس ناتمام را از صف خارج نمی‌کنه.
+  if (!stoppedBy && !busy) {
+    for (const sec of photoSections(await batchPosts(env, bid, false))) {
+      stoppedBy = await stopReason(env);
+      if (stoppedBy) break;
+      const pkey = photoKey(bid, sec.key);
+      const claim = await claimExternal(env, ctx, pkey, "scrape_batch");
+      if (claim.status === "lease_lost") throw new LeaseLostError();
+      if (claim.status !== "claimed") continue; // done: کامل؛ busy/ambiguous: بماند برای مالک یا اجرای دیگر
+      stoppedBy = await stopReason(env);
+      if (stoppedBy) { await finishExternal(env, ctx, pkey, { ok: false, error: `not_sent_${stoppedBy}` }); break; }
+      let msgId;
+      try {
+        msgId = await sendPhotos(env, groupId, sec.label, sec.photos);
+      } catch (err) {
+        if (err && err.refused) {
+          // تلگرام صریحاً رد کرده: عکس نرفته؛ با «ادامه» دوباره امتحان می‌شه
+          await finishExternal(env, ctx, pkey, { ok: false, error: err.message });
+          console.error("photo_refused", pkey);
+          continue;
+        }
+        throw new AmbiguousError(pkey);
       }
+      const recorded = await finishExternal(env, ctx, pkey, { ok: true, msgId, result: `photos ${sec.label}` });
+      if (!recorded) throw new AmbiguousError(pkey);
     }
   }
 
-  // دسته فقط وقتی «ارسال شد» می‌شه که هیچ پستی باقی نمونده باشه؛ وگرنه sending می‌مونه تا ادامه یا تصمیم مالک
-  const left = await env.DB.prepare(
+  if (busy) return "این دسته هم‌اکنون در حال ارساله؛ چیزی دوبار فرستاده نشد.";
+  const leftTexts = (await env.DB.prepare(
     "SELECT COUNT(*) AS n FROM posts p JOIN scrape_batch_items bi ON bi.post_id = p.id WHERE bi.batch_id = ? AND p.sent_at_utc IS NULL"
-  ).bind(bid).first();
-  const remaining = left ? left.n : 0;
-  if (remaining === 0) {
+  ).bind(bid).first()).n;
+  const leftPhotos = (await pendingPhotoSections(env, bid)).length;
+  const refusedNote = refused ? `${refused} پست را تلگرام به‌خاطر محتوا نپذیرفت (ارسال نشد و در /scrape_status ثبت شد).` : "";
+  if (leftTexts === 0 && leftPhotos === 0) {
     await env.DB.prepare("UPDATE scrape_batches SET state = 'sent' WHERE id = ? AND state = 'sending'").bind(bid).run();
-    return `ارسال شد: ${reloaded.results.length} پست.`;
+    return [`ارسال شد: ${sentNow} پست.`, refusedNote].filter(Boolean).join(" ");
   }
-  const amb = ambiguousLeft ? ` ${ambiguousLeft} پست نتیجه‌ی مبهم دارد و در /review است.` : "";
-  return `ارسال ناقص: ${sentNow} پست رفت، ${remaining} پست هنوز نرفته.${amb} با «ادامه» فقط بخش‌های نرفته ارسال می‌شن.`;
+  // دسته sending می‌مونه؛ از /review با «ادامه» قابل بازیابیه
+  const why = stoppedBy ? (stoppedBy === "quiet" ? "ساعت سکوت شروع شد" : "ارسال متوقف است") : "";
+  return [
+    `ارسال ناقص: ${sentNow} پست رفت، ${leftTexts} پست و ${leftPhotos} بخش عکس هنوز نرفته.`,
+    why ? `${why}؛ باقی‌مانده نگه داشته شد.` : "",
+    refusedNote,
+  ].filter(Boolean).join(" ");
 }
 
-// دسته‌هایی که در sending مانده‌اند و هنوز پستی دارند (برای /review). هیچ زمان‌انقضایی ندارند.
+// پست‌هایی که تلگرام به‌خاطر محتوا نپذیرفت: از صف خارج، با outcome=telegram_refused (نه delivered)
+async function closeRefused(env, ids) {
+  await setOutcome(env, ids, "telegram_refused");
+  for (const id of ids) {
+    await env.DB.prepare("UPDATE posts SET sent_at_utc = ? WHERE id = ? AND sent_at_utc IS NULL").bind(nowUtc(), id).run();
+  }
+}
+
+// صرف‌نظر مالک از عکس‌های نرفته یا ردشده. عکس مبهم را صرف‌نظر نمی‌کنیم (باید در /review تعیین شود).
+export async function skipPhotos(env, bid) {
+  let n = 0;
+  const nowS = Math.floor(Date.now() / 1000);
+  for (const sec of await pendingPhotoSections(env, bid)) {
+    if (sec.state === "intent") continue;
+    const key = photoKey(bid, sec.key);
+    if (sec.state === "none") {
+      await env.DB.prepare("INSERT OR IGNORE INTO effects (op_key, kind, state, update_id, lease, result, at_utc) VALUES (?, 'scrape_batch', 'done', NULL, '', 'owner_skipped', ?)").bind(key, nowS).run();
+    } else {
+      await env.DB.prepare("UPDATE effects SET state = 'done', result = 'owner_skipped', last_error = '' WHERE op_key = ? AND state = 'failed'").bind(key).run();
+    }
+    n += 1;
+  }
+  return n;
+}
+
+// دسته‌هایی که در sending مانده‌اند و هنوز متن یا عکس دارند (برای /review). هیچ زمان‌انقضایی ندارند.
 export async function listStalledBatches(env) {
   const { results } = await env.DB.prepare(
     `SELECT b.id AS id,
@@ -220,7 +361,13 @@ export async function listStalledBatches(env) {
           WHERE bi.batch_id = b.id AND p.sent_at_utc IS NULL AND EXISTS (SELECT 1 FROM effects e WHERE e.op_key = bi.unit AND e.state = 'intent')) AS amb_n
      FROM scrape_batches b WHERE b.state = 'sending' ORDER BY b.id`
   ).all();
-  return results.filter((r) => r.left_n > 0);
+  const out = [];
+  for (const r of results) {
+    const photos = await pendingPhotoSections(env, r.id);
+    const photoAmb = photos.filter((x) => x.state === "intent").length;
+    if (r.left_n > 0 || photos.length) out.push({ id: r.id, left_n: r.left_n, amb_n: r.amb_n + photoAmb, photo_n: photos.length });
+  }
+  return out;
 }
 
 async function markSent(env, ids) {
@@ -284,6 +431,14 @@ export async function handleBatchCallback(env, cq, ctx) {
     if (!Number.isSafeInteger(bid) || bid <= 0) text = "نامعتبر";
     else if (action === "s") text = await approveBatch(env, ctx, bid);
     else if (action === "c") text = await continueBatch(env, ctx, bid);
+    else if (action === "k") {
+      const b = await env.DB.prepare("SELECT state FROM scrape_batches WHERE id = ?").bind(bid).first();
+      if (!b || b.state !== "sending") text = "این دسته برای این کار باز نیست.";
+      else {
+        const n = await skipPhotos(env, bid);
+        text = `${n} بخش عکس صرف‌نظر شد. ${await continueBatch(env, ctx, bid)}`;
+      }
+    }
     else if (action === "r") text = await rejectBatch(env, bid);
     else text = "نامعتبر";
   } catch (err) {

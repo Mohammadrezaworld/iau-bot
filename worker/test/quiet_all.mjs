@@ -44,3 +44,5 @@ out.push(["DM /start (user)", d.calls.some((c) => c.m === "sendMessage") ? "answ
 const o = await send(dm("/menu", 900000001));
 out.push(["DM /menu (owner)", o.calls.some((c) => c.m === "sendMessage") ? "answered" : "SILENT(bad)", ""]);
 for (const r of out) console.log(`${HOUR}:00 | ${r[0]} → ${r[1]} ${r[2]}`);
+const badQuiet = out.filter((r) => !(r[1] === "silent" || r[1] === "answered") || (r[0].startsWith("DM") ? r[1] !== "answered" : r[1] !== "silent"));
+if (badQuiet.length) { console.error("quiet_all: unexpected lines", badQuiet.length); process.exit(1); }
