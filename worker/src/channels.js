@@ -56,8 +56,20 @@ export async function scrapePaused(env) {
 
 // حالت ارسال: توقف (paused) > خودکار (scrape_auto=1) > تأیید دستی (پیش‌فرض، وقتی تنظیمی نیست)
 export async function scrapeMode(env) {
-  if (await scrapePaused(env)) return "stop";
-  return String(await getSetting(env, "scrape_auto", "0")) === "1" ? "auto" : "manual";
+  return (await readModeSnapshot(env)).mode;
+}
+
+// یک خواندن از سه تنظیم حالت با هم؛ نوشتن حالت هم یک تراکنش است (writeMode در scrape_mode.js)
+// پس خواننده یا حالت قدیمی را می‌بیند یا جدید را؛ cutoff نیمه‌کاره دیده نمی‌شود.
+export async function readModeSnapshot(env) {
+  const { results } = await env.DB.prepare(
+    "SELECT key, value FROM settings WHERE key IN ('scrape_paused', 'scrape_auto', 'scrape_auto_since')"
+  ).all();
+  const m = Object.fromEntries(results.map((r) => [r.key, r.value]));
+  const paused = String(m.scrape_paused ?? "0") === "1";
+  const auto = String(m.scrape_auto ?? "0") === "1";
+  const since = Number(m.scrape_auto_since ?? 0);
+  return { paused, auto, since, mode: paused ? "stop" : auto ? "auto" : "manual" };
 }
 
 export async function setScrapePaused(env, on) {
@@ -79,25 +91,10 @@ export async function scrapeCommand(env, chatId, userId, cmd, arg, owner) {
   }
   if (!owner) return sendMessage(env, chatId, "این دستور فقط برای مالک ربات است.");
   if (cmd === "/scrape_pause") {
+    // /scrape_pause همان حالت «توقف انتشار» پنل است؛ ادامه فقط از همان سرویس (commands.js → resumeCommand)
     await setScrapePaused(env, true);
     await audit(env, userId, "scrape_pause", "");
     return sendMessage(env, chatId, "ارسال پست‌ها به گروه متوقف شد. پست‌ها همچنان ذخیره می‌شن.\nبرای ادامه: /scrape_resume");
-  }
-  if (cmd === "/scrape_resume") {
-    // پیش‌فرض: پست‌های معوقِ دوران توقف ارسال نمی‌شن، فقط پست‌های جدید بعد از ادامه.
-    // /scrape_resume all: معوق‌ها هم ارسال می‌شن (با احتیاط؛ ممکنه چند پست یک‌جا بیاد).
-    const all = normalizeForMatch(arg) === "all";
-    const before = await unsentCount(env);
-    if (!all) {
-      await setOutcome(env, (await env.DB.prepare("SELECT id FROM posts WHERE sent_at_utc IS NULL").all()).results.map((r) => r.id), "skipped_resume");
-      await env.DB.prepare("UPDATE posts SET sent_at_utc = ? WHERE sent_at_utc IS NULL").bind(nowUtc()).run();
-      // دسته‌های منتظر تأیید هم رد می‌شن (پست‌هاشون بالا علامت خوردن)
-      await env.DB.prepare("UPDATE scrape_batches SET state = 'rejected' WHERE state = 'pending'").run();
-    }
-    await setScrapePaused(env, false);
-    await audit(env, userId, "scrape_resume", all ? `all ${before}` : `skip ${before}`);
-    if (all) return sendMessage(env, chatId, `ارسال دوباره فعال شد. ${before} پست معوق است و پیش‌نمایش آن‌ها برای تأیید شما می‌آید.`);
-    return sendMessage(env, chatId, `ارسال دوباره فعال شد. ${before} پست معوق از دوران توقف ارسال نشد؛ فقط پست‌های جدید از این به بعد برای تأیید پیشنهاد می‌شن.`);
   }
   return null;
 }
@@ -146,12 +143,17 @@ const MAX_LINE = 4000;
 // هیچ‌وقت چند پیام زیر یک اثر فرستاده نمی‌شه، پس تکرار بخش موفق در retry ممکن نیست.
 // رد محتوایی (هر دو قالب) قطعی و بدون ارسال است؛ با contentRefused مشخص می‌شه تا caller واحد را تجزیه کند.
 // خطاهای گروه/دسترسی و خطای شبکه همان‌طور که بودند پرت می‌شن.
-async function sendBlocksSafely(env, groupId, blocks, label) {
+async function sendBlocksSafely(env, groupId, blocks, label, guard = null) {
   const html = blocks.map((b) => b.html).join("\n");
   try {
     return (await sendHtml(env, groupId, html)).message_id;
   } catch (err) {
     if (!CONTENT_ERROR.test(err.message || "")) throw err;
+  }
+  // تلاش متن ساده هم تماس تازه با تلگرام است: قبل از آن مجوز و سکوت/توقف دوباره بررسی می‌شود
+  if (guard) {
+    const why = await guard();
+    if (why) { const e = new Error(`not sent: ${why}`); e.stopped = why; throw e; }
   }
   const plain = blocks.map((b) => b.plain).join("\n");
   try {
@@ -205,8 +207,8 @@ export function buildSections(posts, keywords) {
 export { chunkMessages };
 
 // ارسال یک بخش از پیام‌ها به گروه؛ شناسه‌ی آخرین پیام تلگرام رو برمی‌گردونه
-export async function sendChunk(env, groupId, blocks, label) {
-  return sendBlocksSafely(env, groupId, blocks, label);
+export async function sendChunk(env, groupId, blocks, label, guard = null) {
+  return sendBlocksSafely(env, groupId, blocks, label, guard);
 }
 
 // عکس‌های یک کانال: یک عکس با sendPhoto، دو تا ده عکس با sendMediaGroup (آلبوم یک‌عکسی معتبر نیست).

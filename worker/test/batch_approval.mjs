@@ -235,8 +235,10 @@ T("M retry sends once and marks sent", mRes2.status === 200 && G.sent.length ===
 
 // N) /scrape_resume (بدون all) دسته‌های منتظر را رد می‌کنه
 addPost("telegram:test_channel_a", "پست ریست"); await prepareBatch(env); const N1 = batchOf("پست ریست");
+// /scrape_resume فقط از حالت توقف کار می‌کند (از همان سرویس پنل)؛ پس اول توقف
+await hook(ownerDm("/scrape_pause"));
 reset(); await hook(ownerDm("/scrape_resume"));
-T("N default resume rejects pending batch and skips its posts", batchState(N1) === "rejected" && q1("SELECT sent_at_utc AS s FROM posts WHERE text = 'پست ریست'").s !== null);
+T("N resume from stop rejects pending batch and skips its posts", batchState(N1) === "rejected" && q1("SELECT sent_at_utc AS s FROM posts WHERE text = 'پست ریست'").s !== null);
 
 // O) دکمه‌ی غیرمالک: بی‌صدا، هیچ تغییری نیست
 addPost("telegram:test_channel_a", "پست غیرمالک"); await prepareBatch(env); const O1 = batchOf("پست غیرمالک");

@@ -10,6 +10,7 @@ import { faDate } from "./calendar.js";
 import { handleManage, publicContacts, publicResources, publicEvents, MANAGE_HELP } from "./manage.js";
 import { handleMetroDocument, metroInfoText, handleMetroCommand } from "./metro.js";
 import { keywordCommand } from "./keywords.js";
+import { resumeCommand } from "./scrape_mode.js";
 import { holidayCommand } from "./holidays.js";
 import { undoLast } from "./undo.js";
 import { setQuietCommand } from "./channels.js";
@@ -215,8 +216,9 @@ export async function handleAdminMessage(env, message) {
       return sendMessage(env, chatId, await undoLast(env, userId));
     case "/set_quiet":
       return setQuietCommand(env, chatId, userId, arg);
-    case "/scrape_pause":
     case "/scrape_resume":
+      return resumeCommand(env, chatId, userId, arg, await isOwner(env, userId));
+    case "/scrape_pause":
     case "/scrape_status":
       return scrapeCommand(env, chatId, userId, cmd, arg, await isOwner(env, userId));
     case "/keyword_list":
