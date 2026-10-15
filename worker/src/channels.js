@@ -61,15 +61,22 @@ export async function scrapeMode(env) {
 
 // یک خواندن از سه تنظیم حالت با هم؛ نوشتن حالت هم یک تراکنش است (writeMode در scrape_mode.js)
 // پس خواننده یا حالت قدیمی را می‌بیند یا جدید را؛ cutoff نیمه‌کاره دیده نمی‌شود.
+// قفل انتشار خودکار: بدون SCRAPE_AUTO_ALLOWED=1 در محیط deploy، حالت خودکار هرگز مؤثر نیست،
+// حتی اگر scrape_auto=1 در D1 مانده باشد.
+export function autoAllowed(env) {
+  return String(env.SCRAPE_AUTO_ALLOWED || "") === "1";
+}
+
 export async function readModeSnapshot(env) {
   const { results } = await env.DB.prepare(
     "SELECT key, value FROM settings WHERE key IN ('scrape_paused', 'scrape_auto', 'scrape_auto_since')"
   ).all();
   const m = Object.fromEntries(results.map((r) => [r.key, r.value]));
   const paused = String(m.scrape_paused ?? "0") === "1";
-  const auto = String(m.scrape_auto ?? "0") === "1";
+  const storedAuto = String(m.scrape_auto ?? "0") === "1";
+  const auto = storedAuto && autoAllowed(env);
   const since = Number(m.scrape_auto_since ?? 0);
-  return { paused, auto, since, mode: paused ? "stop" : auto ? "auto" : "manual" };
+  return { paused, auto, storedAuto, since, mode: paused ? "stop" : auto ? "auto" : "manual" };
 }
 
 export async function setScrapePaused(env, on) {

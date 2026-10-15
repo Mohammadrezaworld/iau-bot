@@ -96,6 +96,15 @@ async function createBatch(env, groupId, posts, auto, epoch = 0) {
 
 // ارسال خودکار زیر یک update مصنوعی (lease واقعی). اگه نتیجه مبهم بشه، مثل webhook در /review می‌آد.
 // شناسه‌ی منفی است تا با شناسه‌های تلگرام تداخل نکنه.
+// پیش‌نمایش دوباره‌ی دسته‌ی هنوز pending (مثلاً وقتی خودکار پیش از شروع متوقف شد):
+// همان دکمه‌های تأیید/رد دستی، تا مالک بتواند تصمیم بگیرد.
+async function resendPreview(env, bid) {
+  const keywords = await keywordsList(env);
+  const posts = (await batchPosts(env, bid, true)).map(forSend);
+  if (!posts.length) return;
+  await sendPreview(env, bid, buildSections(posts, keywords), posts.length);
+}
+
 export async function autoApprove(env, bid, epoch) {
   const id = -(Math.floor(Date.now() * 1000) + Math.floor(Math.random() * 1000));
   // epoch = زمان فعال‌سازی خودکار که این دسته تحتش ساخته شد؛ هر ارسال خودکار قبل از تماس تازه دوباره با آن مقایسه می‌شه
@@ -106,7 +115,14 @@ export async function autoApprove(env, bid, epoch) {
   let msg = "";
   try {
     msg = await approveBatch(env, ctx, bid);
+    const st = await env.DB.prepare("SELECT state FROM scrape_batches WHERE id = ?").bind(bid).first();
     await markDoneWithRetry(env, id, ctx.lease);
+    if (st && st.state === "pending") {
+      // پیش از شروع متوقف شد: دسته منتظر تأیید مالک می‌ماند و پیش‌نمایش دستی دوباره می‌آید (نه ambiguous، نه انتشار)
+      await tg(env, "sendMessage", { chat_id: env.OWNER_ID, text: `ارسال خودکار (دسته ${bid}) شروع نشد: ${msg}`, disable_web_page_preview: true }).catch(() => {});
+      await resendPreview(env, bid).catch((e) => console.error("resend_preview_failed", bid, e && e.message));
+      return { held: msg };
+    }
   } catch (err) {
     if (err && err.name === "LeaseLostError") return { lease_lost: true };
     const text = err && err.message ? err.message : "unknown";

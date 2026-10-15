@@ -2,7 +2,7 @@
 // فقط اسکرپ؛ یادآوری رویدادها مستقل است. تغییر فقط برای مالک، در هر callback نهایی بررسی می‌شه.
 import { tg } from "./telegram.js";
 import { isOwner, audit } from "./admin.js";
-import { scrapeMode, readModeSnapshot } from "./channels.js";
+import { scrapeMode, readModeSnapshot, autoAllowed } from "./channels.js";
 import { prepareBatch } from "./batches.js";
 import { setOutcome } from "./outcomes.js";
 
@@ -43,6 +43,7 @@ export async function changeMode(env, actorId, target, backlog = null) {
   if (!["manual", "auto", "stop"].includes(target)) return { ok: false, text: "حالت نامعتبر." };
   const from = await scrapeMode(env);
   if (from === target) return { ok: true, text: `همین حالت از قبل فعال است: ${LABEL[target]}.` };
+  if (target === "auto" && !autoAllowed(env)) return { ok: false, text: LOCKED_TEXT };
   if (from === "stop" && target !== "stop") {
     if (!["new", "sug"].includes(backlog)) return { ok: false, text: "اول مشخص کن پست‌های معوق چه شوند." };
     if (backlog === "new") await skipBacklog(env);
@@ -57,15 +58,21 @@ export async function changeMode(env, actorId, target, backlog = null) {
 
 // تأیید دوم خودکار: نشانه‌ی یک‌بار مصرف و زمان‌دار. انصراف یا هر دکمه‌ی دیگر آن را باطل می‌کند.
 const TOKEN_TTL_S = 300;
+const LOCKED_TEXT = "ارسال خودکار پس از پایان آزمایش قابل فعال‌سازی است.";
+// هر صدور یک nonce تصادفی یکتا دارد؛ زمان فقط برای انقضاست. صدور جدید یا انصراف، nonce قبلی را بی‌اعتبار می‌کند.
 async function issueAutoToken(env) {
-  const t = String(nowS());
-  await setSetting(env, "scrape_auto_token", t);
-  return t;
+  const nonce = crypto.randomUUID();
+  await setSetting(env, "scrape_auto_token", `${nonce}|${nowS()}`);
+  return nonce;
 }
-async function consumeAutoToken(env, t) {
-  if (!/^\d+$/.test(String(t || ""))) return false;
-  const r = await env.DB.prepare("UPDATE settings SET value = '' WHERE key = 'scrape_auto_token' AND value = ?").bind(String(t)).run();
-  return r.meta.changes === 1 && nowS() - Number(t) <= TOKEN_TTL_S;
+async function consumeAutoToken(env, nonce) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(nonce || ""))) return false;
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'scrape_auto_token'").first();
+  const [stored, issued] = String((row && row.value) || "").split("|");
+  if (stored !== nonce || nowS() - Number(issued) > TOKEN_TTL_S) return false;
+  // مصرف اتمیک: فقط همان مقدار خوانده‌شده پاک می‌شود
+  const r = await env.DB.prepare("UPDATE settings SET value = '' WHERE key = 'scrape_auto_token' AND value = ?").bind(String(row.value)).run();
+  return r.meta.changes === 1;
 }
 async function clearAutoToken(env) {
   await setSetting(env, "scrape_auto_token", "");
@@ -102,12 +109,15 @@ async function panelText(env) {
   ].join("\n");
 }
 
-function panelMarkup(mode) {
+function panelMarkup(mode, env) {
   const b = (text, data) => ({ text, callback_data: data });
+  const autoBtn = autoAllowed(env)
+    ? [b(`${mode === "auto" ? "✓ " : ""}ارسال خودکار`, "ss:auto")]
+    : [b("ارسال خودکار (پس از پایان آزمایش قابل فعال‌سازی است)", "ss:locked")];
   return {
     inline_keyboard: [
       [b(`${mode === "manual" ? "✓ " : ""}تأیید دستی`, "ss:manual")],
-      [b(`${mode === "auto" ? "✓ " : ""}ارسال خودکار`, "ss:auto")],
+      autoBtn,
       [b(`${mode === "stop" ? "✓ " : ""}توقف انتشار`, "ss:stop")],
     ],
   };
@@ -116,7 +126,7 @@ function panelMarkup(mode) {
 // /scrape_settings (فقط مالک، در پیوی)
 export async function scrapeSettingsCommand(env, chatId) {
   const mode = await scrapeMode(env);
-  return tg(env, "sendMessage", { chat_id: chatId, text: await panelText(env), reply_markup: panelMarkup(mode), disable_web_page_preview: true });
+  return tg(env, "sendMessage", { chat_id: chatId, text: await panelText(env), reply_markup: panelMarkup(mode, env), disable_web_page_preview: true });
 }
 
 // دکمه‌های ss:*. هر callback دوباره مالک و پیوی را چک می‌کند (dispatch هم چک می‌کند).
@@ -132,9 +142,10 @@ export async function handleScrapeSettingsCallback(env, cq, ctx) {
   const mode = await scrapeMode(env);
   const btn = (text, data) => ({ text, callback_data: data });
   if (["m", "manual", "stop"].includes(action)) await clearAutoToken(env);
+  if (action === "locked" || (action === "auto" && !autoAllowed(env))) return ack(LOCKED_TEXT);
 
   if (action === "m") {
-    return tg(env, "sendMessage", { chat_id: chatId, text: await panelText(env), reply_markup: panelMarkup(await scrapeMode(env)), disable_web_page_preview: true });
+    return tg(env, "sendMessage", { chat_id: chatId, text: await panelText(env), reply_markup: panelMarkup(await scrapeMode(env), env), disable_web_page_preview: true });
   }
   if (action === "manual" || action === "stop") {
     if (mode === "stop" && action === "manual") {
