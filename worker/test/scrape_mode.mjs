@@ -77,6 +77,8 @@ globalThis.fetch = async (u, o) => {
 
 raw.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('group_id', '-1001')").run();
 const env = { TELEGRAM_BOT_TOKEN: "1:T", OWNER_ID: "5", JOZVE_CHANNEL: "-100999", INGEST_SECRET: "s", DB: db };
+// این استقرار تست صریحاً انتشار خودکار را باز کرده است (در deploy واقعی این متغیر تنظیم نیست؛ قفل پیش‌فرض بسته است)
+env.SCRAPE_AUTO_ALLOWED = "1";
 const W = (await import(WORKER + "src/index.js")).default;
 const { webhookSecret } = await import(WORKER + "src/telegram.js");
 const { prepareBatch, expireBatches } = await import(WORKER + "src/batches.js");
@@ -349,6 +351,69 @@ addPost("telegram:test_channel_a", "منتظر هشت ب"); reset(); await prepa
 reset(); await hook(ownerDm("/scrape_resume"));
 T("R8 resume outside stop is a no-op (pending batch kept, mode kept)", batchState(r8b) === "pending" && (await scrapeMode()) === "manual" && ownerTexts().some((t) => t.includes("متوقف نیست")));
 reset(); await hook(cbOwner(`sb:r:${r8b}`));
+
+// R10) R1: تغییر حالت بعد از ساخت دسته و پیش از اولین ارسال → دسته pending و پیش‌نمایش دستی برای مالک
+reset(); await hook(cbOwner("ss:manual"));
+reset(); await hook(cbOwner("ss:auto")); tick(); await hook(cbOwner(tokBtn("ss:autoy:")));
+const r10p = "پیش از شروع ده ۱۰";
+addPost("telegram:test_channel_a", r10p);
+let once10 = true;
+chk = (sql) => { if (once10 && /INSERT OR IGNORE INTO update_queue/.test(sql)) { once10 = false; raw.prepare("UPDATE settings SET value = '0' WHERE key = 'scrape_auto'").run(); } };
+reset(); await prepareBatch(env);
+chk = null;
+const b10 = batchOf(r10p);
+T("R10 mode changed before first auto send: nothing sent, batch stays pending", !groupHas(r10p) && batchState(b10) === "pending" && sentAt(r10p) === null);
+T("R10 owner gets manual preview with approve/reject for that batch", owner.some((m) => JSON.stringify(m.reply_markup || {}).includes(`sb:s:${b10}`) && JSON.stringify(m.reply_markup || {}).includes(`sb:r:${b10}`)));
+T("R10 owner gets a notice that auto did not start", ownerTexts().some((t) => t.includes("شروع نشد")));
+reset(); await hook(cbOwner(`sb:s:${b10}`));
+T("R10 owner approval of held batch sends exactly once", G.sent.filter((m) => String(m.text).includes(r10p)).length === 1 && batchState(b10) === "sent");
+
+// R10b) R1 نسخه‌ی توقف: توقف پیش از شروع هم همین مسیر قابل تأیید را می‌دهد
+reset(); await hook(cbOwner("ss:auto")); tick(); await hook(cbOwner(tokBtn("ss:autoy:")));
+const r10bp = "توقف پیش از شروع ده ب";
+addPost("telegram:test_channel_a", r10bp);
+chk = (sql) => { if (/INSERT OR IGNORE INTO update_queue/.test(sql)) { chk = null; raw.prepare("UPDATE settings SET value = '1' WHERE key = 'scrape_paused'").run(); } };
+reset(); await prepareBatch(env);
+chk = null;
+raw_stop_reset: raw.prepare("UPDATE settings SET value = '0' WHERE key = 'scrape_paused'").run();
+const b10b = batchOf(r10bp);
+T("R10b stop before first auto send: nothing sent, batch pending, owner preview present", !groupHas(r10bp) && batchState(b10b) === "pending" && owner.some((m) => JSON.stringify(m.reply_markup || {}).includes(`sb:r:${b10b}`)));
+reset(); await hook(cbOwner(`sb:r:${b10b}`));
+T("R10b owner can reject the held batch", batchState(b10b) === "rejected" && !groupHas(r10bp));
+
+// R11) R2: nonce یکتا؛ صدور → انصراف → صدور مجدد در همان ثانیه؛ دکمه‌ی قدیمی باید رد شود
+reset(); await hook(cbOwner("ss:manual"));
+reset(); await hook(cbOwner("ss:auto")); const old11 = tokBtn("ss:autoy:");
+reset(); await hook(cbOwner("ss:m"));
+reset(); await hook(cbOwner("ss:auto")); const new11 = tokBtn("ss:autoy:");
+T("R11 two issues in the same second produce different tokens", old11 !== new11);
+reset(); await hook(cbOwner(old11));
+T("R11 cancelled button from same second is rejected", (await scrapeMode()) === "manual" && lastAnswer().includes("منقضی"));
+reset(); await hook(cbOwner(new11));
+T("R11 current button still works (single use)", (await scrapeMode()) === "auto");
+reset(); await hook(cbOwner(new11));
+T("R11 used button cannot be replayed", lastAnswer().includes("منقضی"));
+reset(); await hook(cbOwner("ss:manual"));
+
+// R12) قفل انتشار خودکار: بدون SCRAPE_AUTO_ALLOWED، حتی scrape_auto=1 در D1 هیچ ارسال خودکاری نمی‌سازد
+delete env.SCRAPE_AUTO_ALLOWED;
+raw.prepare("UPDATE settings SET value = '1' WHERE key = 'scrape_auto'").run();
+raw.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('scrape_auto_since', ?)").run(String(Math.floor(clock.ms / 1000) - 100));
+T("R12 stale D1 auto=1 is ignored without deploy flag", (await scrapeMode()) === "manual");
+addPost("telegram:test_channel_a", "قفل دوازده ۱۲"); reset(); await prepareBatch(env);
+T("R12 locked: new post becomes manual preview, not auto-sent", !groupHas("قفل دوازده ۱۲") && stateOfPost("قفل دوازده ۱۲") === "pending");
+reset(); await hook(cbOwner("ss:auto"));
+T("R12 locked: auto button refuses with explanation, no mode change", lastAnswer().includes("قابل فعال‌سازی") && (await scrapeMode()) === "manual");
+reset(); await hook(ownerDm("/scrape_settings"));
+const panel12 = JSON.stringify(owner.at(-1)?.reply_markup || {});
+T("R12 panel shows disabled auto button, not ss:auto", panel12.includes("ss:locked") && !panel12.includes('"ss:auto"') && panel12.includes("پس از پایان آزمایش"));
+reset(); await hook(cbOwner(`sb:r:${batchOf("قفل دوازده ۱۲")}`));
+reset(); await hook(cbOwner("ss:stop"));
+T("R12 locked: stop still works", (await scrapeMode()) === "stop");
+reset(); await hook(cbOwner("ss:manual")); reset(); await hook(cbOwner("ss:go:manual:new"));
+T("R12 locked: manual mode and leaving stop still work", (await scrapeMode()) === "manual");
+env.SCRAPE_AUTO_ALLOWED = "1";
+raw.prepare("UPDATE settings SET value = '0' WHERE key = 'scrape_auto'").run();
 
 console.log(fails ? `\n${fails} FAIL` : "\nALL PASS");
 process.exit(fails ? 1 : 0);
