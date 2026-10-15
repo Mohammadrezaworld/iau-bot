@@ -54,7 +54,13 @@ export async function scrapePaused(env) {
   return String(await getSetting(env, "scrape_paused", "0")) === "1";
 }
 
-async function setScrapePaused(env, on) {
+// حالت ارسال: توقف (paused) > خودکار (scrape_auto=1) > تأیید دستی (پیش‌فرض، وقتی تنظیمی نیست)
+export async function scrapeMode(env) {
+  if (await scrapePaused(env)) return "stop";
+  return String(await getSetting(env, "scrape_auto", "0")) === "1" ? "auto" : "manual";
+}
+
+export async function setScrapePaused(env, on) {
   await env.DB.prepare(
     "INSERT INTO settings (key, value) VALUES ('scrape_paused', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
   ).bind(on ? "1" : "0").run();
@@ -136,33 +142,29 @@ function chunkMessages(blocks) {
 const CONTENT_ERROR = /too long|text is empty|parse entities|message text/i;
 const MAX_LINE = 4000;
 
-// بخش را یک‌جا می‌فرسته. اگه تلگرام به‌خاطر محتوا رد کرد، خط‌ها یکی‌یکی و کوتاه‌شده فرستاده می‌شن
-// تا یک پست خراب کل صف رو متوقف نکنه. خطاهای گروه/دسترسی (مثل chat not found) دوباره پرتاب می‌شن
-// تا پست‌ها در صف بمونن و چیزی علامت ارسال نخوره.
-// اول با HTML (کوت‌ها)؛ اگه بلوکی رد شد، همون بلوک با متن ساده فرستاده می‌شه تا تگ خام دیده نشه.
+// یک واحد = یک پیام تلگرام = یک اثر. اول HTML؛ اگه محتوا رد شد، همان واحد با متن ساده (باز هم یک پیام).
+// هیچ‌وقت چند پیام زیر یک اثر فرستاده نمی‌شه، پس تکرار بخش موفق در retry ممکن نیست.
+// رد محتوایی (هر دو قالب) قطعی و بدون ارسال است؛ با contentRefused مشخص می‌شه تا caller واحد را تجزیه کند.
+// خطاهای گروه/دسترسی و خطای شبکه همان‌طور که بودند پرت می‌شن.
 async function sendBlocksSafely(env, groupId, blocks, label) {
-  let last = null;
+  const html = blocks.map((b) => b.html).join("\n");
   try {
-    last = await sendHtml(env, groupId, blocks.map((b) => b.html).join("\n"));
-    return last.message_id;
+    return (await sendHtml(env, groupId, html)).message_id;
   } catch (err) {
     if (!CONTENT_ERROR.test(err.message || "")) throw err;
   }
-  for (const b of blocks) {
-    try {
-      last = await sendHtml(env, groupId, b.html);
-      continue;
-    } catch (err) {
-      if (!CONTENT_ERROR.test(err.message || "")) throw err;
-    }
-    try {
-      last = await tg(env, "sendMessage", { chat_id: groupId, text: b.plain, disable_web_page_preview: true });
-    } catch (err) {
-      if (!CONTENT_ERROR.test(err.message || "")) throw err;
-      await recordEvent(env, "system", "", "error", `send: ${label} — ${err.message}`);
-    }
+  const plain = blocks.map((b) => b.plain).join("\n");
+  try {
+    const res = await tg(env, "sendMessage", { chat_id: groupId, text: plain, disable_web_page_preview: true });
+    return res.message_id;
+  } catch (err) {
+    if (!CONTENT_ERROR.test(err.message || "")) throw err;
+    const e = new Error(err.message || "content refused");
+    e.refused = true;
+    e.contentRefused = true;
+    e.label = label;
+    throw e;
   }
-  return last ? last.message_id : null;
 }
 
 // بلوک یک پست: خط اول بولد (عنوان)، متن داخل کوت؛ کوت‌های بلند قابل باز شدن.
@@ -207,8 +209,13 @@ export async function sendChunk(env, groupId, blocks, label) {
   return sendBlocksSafely(env, groupId, blocks, label);
 }
 
-// آلبوم عکس‌های یک کانال؛ خطای عکس، متن را خراب نمی‌کنه (ولی خطای مبهم را پرت می‌کنه)
+// عکس‌های یک کانال: یک عکس با sendPhoto، دو تا ده عکس با sendMediaGroup (آلبوم یک‌عکسی معتبر نیست).
+// خطای قطعی تلگرام پرت می‌شه (refused)؛ خطای مبهم هم همین‌طور؛ caller تصمیم می‌گیره.
 export async function sendPhotos(env, groupId, label, photos) {
+  if (photos.length === 1) {
+    const res = await tg(env, "sendPhoto", { chat_id: groupId, photo: photos[0].image_url, caption: label });
+    return res && res.message_id ? res.message_id : null;
+  }
   const res = await tg(env, "sendMediaGroup", {
     chat_id: groupId,
     media: photos.map((p, i) => ({ type: "photo", media: p.image_url, ...(i === 0 ? { caption: label } : {}) })),

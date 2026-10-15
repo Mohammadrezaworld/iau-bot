@@ -6,6 +6,7 @@ export const OUTCOME_LABELS = {
   delivered: "تأیید ربات (در گروه)",
   owner_applied: "تأیید مالک (اثر انجام شد)",
   rejected: "رد شده",
+  telegram_refused: "تلگرام به‌خاطر محتوا نپذیرفت (ارسال نشد)",
   held_flood: "کنار گذاشته شده (سیل)",
   skipped_resume: "بدون ارسال (ادامه‌ی بدون backlog)",
   junk: "فوتر/عدد (بدون محتوا)",
@@ -37,6 +38,7 @@ export async function statusReport(env) {
   return [
     `تأیید ربات (در گروه): ${n("delivered")}`,
     `تأیید مالک (اثر انجام شد): ${n("owner_applied")}`,
+    `رد توسط تلگرام (محتوا، ارسال نشد): ${n("telegram_refused")}`,
     `کنار گذاشته‌شده: سیل ${n("held_flood")} · رد ${n("rejected")} · بدون ارسال ${n("skipped_resume")} · فوتر ${n("junk")} · قدیمی/بی‌تاریخ/آزمایشی/اولیه ${n("old") + n("undated") + n("dry_run") + n("baseline")}`,
     `ارسال‌شده‌ی قبل از این نسخه (بدون جزئیات): ${legacy}`,
     `معوق (هنوز بررسی نشده): ${unsent}`,

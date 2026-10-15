@@ -9,7 +9,8 @@ import { handleKeywordCallback } from "./keywords.js";
 import { handleHolidayCallback } from "./holidays.js";
 import { handleJozvePost, handleJozveCommand, handleJozveCallback, handleJozveRemoveCallback, handleDmCallback, groupMovedGuide, dmIsMember, DM_NOT_MEMBER } from "./jozve.js";
 import { cleanPostText, inTehranQuietHours } from "./channels.js";
-import { prepareBatch, handleBatchCallback, expireBatches, listStalledBatches } from "./batches.js";
+import { prepareBatch, handleBatchCallback, expireBatches, listStalledBatches, approveBatch } from "./batches.js";
+import { scrapeSettingsCommand, handleScrapeSettingsCallback } from "./scrape_mode.js";
 import { isAdmin, isOwner } from "./admin.js";
 import { buildBackup } from "./admin.js";
 import { sendJsonDocument, tg } from "./telegram.js";
@@ -189,6 +190,11 @@ async function handleGroupMessage(env, msg) {
 
 // پردازش یک update: هر خطایی بیرون پرت می‌شه تا handleTelegramWebhook تصمیم بگیره
 async function dispatchUpdate(env, update, ctx = null) {
+  // ارسال خودکار دسته: همان مسیر ایمن ادامه (claim/lease و خطاهای مبهم)
+  if (update && update.kind === "auto_batch") {
+    if (!ctx) return "این دسته را از /review با «ادامه» بزن.";
+    return approveBatch(env, ctx, Number(update.batch));
+  }
   if (update && update.callback_query) {
     const cq = update.callback_query;
     const data = cq.data || "";
@@ -196,6 +202,13 @@ async function dispatchUpdate(env, update, ctx = null) {
       // دسته‌ی اسکرپ: فقط مالک در پیوی
       if (cq.message && cq.message.chat && cq.message.chat.type === "private" && (await isOwner(env, cq.from.id))) {
         return handleBatchCallback(env, cq, ctx);
+      }
+      return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+    }
+    if (data.startsWith("ss:")) {
+      // پنل حالت اسکرپ: فقط مالک در پیوی؛ کنترل نهایی در handler
+      if (cq.message && cq.message.chat && cq.message.chat.type === "private" && (await isOwner(env, cq.from.id))) {
+        return handleScrapeSettingsCallback(env, cq, ctx);
       }
       return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
     }
@@ -241,7 +254,7 @@ async function dispatchUpdate(env, update, ctx = null) {
   const msg = update && update.message;
   if (msg && msg.chat) {
     if (msg.chat.type === "private") {
-      if (msg.from && (await isOwner(env, msg.from.id)) && ["/review", "/retry_update", "/resolve_update"].includes(parseCmd(msg.text).cmd)) {
+      if (msg.from && (await isOwner(env, msg.from.id)) && ["/review", "/retry_update", "/resolve_update", "/scrape_settings"].includes(parseCmd(msg.text).cmd)) {
         return handleOwnerCommand(env, msg);
       }
       // کاربر عادی: فقط /start و /jozve؛ بقیه‌ی پیام‌ها بی‌صدا نادیده گرفته می‌شن
@@ -341,10 +354,14 @@ async function handleOwnerCommand(env, msg) {
     }
     // دسته‌ی ناقص: مستقل از پیش‌نمایش قدیمی؛ ادامه فقط با دکمه‌ی مالک و فقط برای بخش‌های نرفته
     for (const b of stalled) {
-      parts.push(`دسته‌ی ${b.id} ناقص مانده: ${b.left_n} پست نرفته${b.amb_n ? ` (${b.amb_n} مورد مبهم؛ اول در فهرست بالا تعیین کن)` : ""}.`);
+      parts.push(`دسته‌ی ${b.id} ناقص مانده: ${b.left_n} پست و ${b.photo_n} بخش عکس نرفته${b.amb_n ? ` (${b.amb_n} مورد مبهم؛ اول در فهرست بالا تعیین کن)` : ""}.`);
       inline_keyboard.push([{ text: `ادامه‌ی دسته ${b.id}`, callback_data: `sb:c:${b.id}` }]);
+      if (b.photo_n) inline_keyboard.push([{ text: `ادامه بدون عکس‌های دسته ${b.id}`, callback_data: `sb:k:${b.id}` }]);
     }
     return tg(env, "sendMessage", { chat_id: chatId, text: parts.join("\n\n"), reply_markup: { inline_keyboard }, disable_web_page_preview: true });
+  }
+  if (cmd === "/scrape_settings") {
+    return scrapeSettingsCommand(env, chatId);
   }
   if (cmd === "/retry_update") {
     const id = Number(arg.trim());

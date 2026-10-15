@@ -39,7 +39,7 @@ db.prepare = (sql) => { const st = origPrepare(sql); const b = st.bind; st.bind 
 // ---- تلگرام شبیه‌سازی‌شده
 const ok = (result) => Response.json({ ok: true, result });
 let mid = 1000;
-const G = { sent: [], photos: [], fail: null }; // fail: 'network' | 'refuse' (یک‌بار، برای پیام گروه)
+const G = { sent: [], photos: [], singlePhotos: [], fail: null, quietAfterOne: false, failAt: null, dropToken: null, photoFail: null }; // fail: 'network' | 'refuse' (یک‌بار، برای پیام گروه)
 const owner = []; const answers = [];
 globalThis.fetch = async (u, o) => {
   const method = String(u).split("/").pop();
@@ -47,14 +47,24 @@ globalThis.fetch = async (u, o) => {
   if (method === "answerCallbackQuery") { answers.push(b.text || ""); return ok(true); }
   if (method === "getChatMember") return ok({ status: "member" });
   if (String(b.chat_id) === "-1001") {
-    if (method === "sendMediaGroup") { G.photos.push(b.media.length); return ok([{ message_id: ++mid }]); }
+    // مثل تلگرام: آلبوم فقط ۲ تا ۱۰ عکس؛ تک‌عکس با sendPhoto
+    if (method === "sendMediaGroup") { if (b.media.length < 2 || b.media.length > 10) return Response.json({ ok: false, error_code: 400, description: "Bad Request: wrong number of photos in media group" }, { status: 400 }); G.photos.push(b.media.length); return ok([{ message_id: ++mid }]); }
+    if (method === "sendPhoto") {
+      if (G.photoFail === "network") { G.photoFail = null; throw new Error("socket hang up"); }
+      if (G.photoFail === "refuse") { G.photoFail = null; return Response.json({ ok: false, error_code: 400, description: "Bad Request: chat not found" }, { status: 400 }); }
+      G.singlePhotos.push(b.photo); return ok({ message_id: ++mid });
+    }
     if (method === "sendMessage") {
       G.gc = (G.gc || 0) + 1;
       if (G.failAt && G.gc === G.failAt.n) { const k = G.failAt.kind; G.failAt = null; if (k === "network") throw new Error("socket hang up"); return Response.json({ ok: false, error_code: 400, description: "Bad Request: chat not found" }, { status: 400 }); }
       if (G.fail === "network") { G.fail = null; throw new Error("socket hang up"); }
       if (G.fail === "parse" && b.parse_mode === "HTML") { G.fail = null; return Response.json({ ok: false, error_code: 400, description: "Bad Request: can't parse entities: unsupported tag" }, { status: 400 }); }
       if (G.fail === "refuse") { G.fail = null; return Response.json({ ok: false, error_code: 400, description: "Bad Request: chat not found" }, { status: 400 }); }
-      G.sent.push({ text: b.text, parse: b.parse_mode, id: ++mid }); return ok({ message_id: mid });
+      // محتوای ردشدنی در هر دو قالب (تست F2)
+      if (G.dropToken && String(b.text).includes(G.dropToken)) return Response.json({ ok: false, error_code: 400, description: "Bad Request: can't parse entities" }, { status: 400 });
+      G.sent.push({ text: b.text, parse: b.parse_mode, id: ++mid });
+      if (G.quietAfterOne) { G.quietAfterOne = false; clock.ms = Date.UTC(2026, 9, 14, 22, 30); } // 02:00 تهران، بعد از اولین پیام
+      return ok({ message_id: mid });
     }
   }
   if (String(b.chat_id) === "5" && method === "sendMessage") { owner.push(b); return ok({ message_id: ++mid }); }
@@ -82,7 +92,7 @@ const batchOf = (postText) => q1("SELECT bi.batch_id AS b FROM scrape_batch_item
 const unsent = () => q1("SELECT COUNT(*) AS n FROM posts WHERE sent_at_utc IS NULL").n;
 const batchState = (id) => q1("SELECT state FROM scrape_batches WHERE id = ?", id)?.state;
 const ids = (bid) => qN("SELECT post_id FROM scrape_batch_items WHERE batch_id = ?", bid).map((r) => r.post_id);
-const reset = () => { G.sent.length = 0; G.photos.length = 0; owner.length = 0; answers.length = 0; };
+const reset = () => { G.sent.length = 0; G.photos.length = 0; G.singlePhotos.length = 0; owner.length = 0; answers.length = 0; };
 
 let fails = 0; const T = (n, c) => { console.log((c ? "PASS " : "FAIL ") + n); if (!c) fails++; };
 
@@ -123,7 +133,7 @@ T("E all posts of batch marked sent", ids(B1).every((id) => q1("SELECT sent_at_u
 // برچسب کانال از CHANNEL_LABELS می‌آد؛ کانال‌های تست ناشناخته‌اند و خود کلید به‌عنوان برچسب می‌آد
 T("E group got text messages (channel header + posts)", G.sent.length >= 1 && G.sent.some((m) => m.text.includes("telegram:test_channel_a")) && G.sent.some((m) => m.text.includes("bale:test_channel_b")));
 T("E format: long post in expandable blockquote, first line bold", G.sent.some((m) => m.text.includes('<blockquote expandable><b>عنوان اول</b>')));
-T("E photo album sent once for the photo post", G.photos.length === 1);
+T("E single photo sent via sendPhoto once (no one-item album)", G.singlePhotos.length === 1 && G.photos.length === 0);
 T("E answer shows result", answers.some((t) => t.includes("ارسال شد")));
 
 // F) دوبار کلیک هم‌زمان روی همان دسته: هر بخش یک بار
@@ -237,7 +247,8 @@ T("O non-owner button: silent, batch untouched", G.sent.length === 0 && batchSta
 addPost("telegram:test_channel_a", "پست <خراب> و بد"); await prepareBatch(env); const P1 = batchOf("پست <خراب> و بد");
 reset(); G.fail = "parse";
 await hook(cbOwner(`sb:s:${P1}`));
-T("P HTML parse error: post delivered, tag escaped (no raw tag in HTML mode), queue advances", batchState(P1) === "sent" && G.sent.some((m) => m.text.includes("خراب") && !m.text.includes("<خراب>")) && !G.sent.some((m) => m.parse === "HTML" && m.text.includes("<خراب>")) && q1("SELECT sent_at_utc AS s FROM posts WHERE text = 'پست <خراب> و بد'").s !== null);
+// فال‌بک متن ساده: تگ خام فقط در پیام متن ساده (بدون parse) می‌آد؛ هیچ پیام HTML حاوی تگ خام نیست
+T("P HTML parse error: post delivered as plain text, no raw tag in HTML mode, queue advances", batchState(P1) === "sent" && G.sent.some((m) => m.text.includes("خراب") && !m.parse) && !G.sent.some((m) => m.parse === "HTML" && m.text.includes("<خراب>")) && q1("SELECT sent_at_utc AS s FROM posts WHERE text = 'پست <خراب> و بد'").s !== null);
 
 // Q) توقف: ورود پست جدید دسته نمی‌سازه
 reset(); await hook(ownerDm("/scrape_pause"));
@@ -398,6 +409,77 @@ atTehranHour(3); reset(); await hook(cbOwner(`sb:c:${Z5_B}`));
 T("Z5 owner continue in quiet hours: refused, nothing sent", G.sent.length === 0 && batchState(Z5_B) === "sending" && answers.some((t) => t.includes("سکوت")));
 atTehranHour(12); reset(); await hook(cbOwner(`sb:c:${Z5_B}`));
 T("Z5 owner continue at noon: remaining units sent once", G.sent.length === 2 && batchState(Z5_B) === "sent");
+
+// ===== بازتولید و اصلاح بازبینی مستقل (Y1..Y6)
+const onlyBatchOf = (text) => batchOf(text);
+// Y1 (F1): fallback یک‌واحدی؛ موفقیت قبلی در retry تکرار نمی‌شه
+raw.exec("UPDATE posts SET sent_at_utc = 1 WHERE sent_at_utc IS NULL");
+raw.exec("UPDATE scrape_batches SET state = 'rejected' WHERE state = 'pending'");
+atTehranHour(12);
+addPost("telegram:test_channel_a", "y1 POST_ONE alpha"); addPost("telegram:test_channel_a", "y1 POST_TWO beta");
+await prepareBatch(env); const Y1 = batchOf("y1 POST_ONE alpha");
+reset(); G.gc = 0; G.fail = "parse"; G.failAt = { n: 2, kind: "refuse" };
+const y1a = await hook(cbOwner(`sb:s:${Y1}`));
+const y1Copies = () => G.sent.filter((m) => m.text.includes("y1 POST_ONE")).length;
+T("Y1 HTML refused then plain refused: nothing delivered, update failed (500)", y1a.status === 500 && y1Copies() === 0);
+reset(); const y1b = await hook(cbOwner(`sb:s:${Y1}`));
+T("Y1 retry: POST_ONE delivered exactly once", y1b.status === 200 && y1Copies() === 1 && batchState(Y1) === "sent");
+
+// Y2 (F2): محتوای ردشده در هر دو قالب، delivered نمی‌شه؛ بقیه‌ی واحد می‌رسن
+raw.exec("UPDATE posts SET sent_at_utc = 1 WHERE sent_at_utc IS NULL");
+atTehranHour(12);
+addPost("telegram:test_channel_a", "y2 OK-ONE"); addPost("telegram:test_channel_a", "y2 DROP-THIS-POST");
+await prepareBatch(env); const Y2 = batchOf("y2 OK-ONE");
+reset(); G.dropToken = "DROP-THIS-POST";
+const y2res = await hook(cbOwner(`sb:s:${Y2}`));
+G.dropToken = null;
+const y2Out = (t) => q1("SELECT outcome FROM post_outcomes o JOIN posts p ON p.id = o.post_id WHERE p.text = ?", t)?.outcome;
+T("Y2 refused content: not delivered (telegram_refused), sibling post delivered, batch sent", y2res.status === 200 && y2Out("y2 DROP-THIS-POST") === "telegram_refused" && y2Out("y2 OK-ONE") === "delivered" && batchState(Y2) === "sent");
+T("Y2 refused post never appears as delivered message", !G.sent.some((m) => m.text.includes("DROP-THIS-POST") && !m.text.includes("نپذیرفت")) && G.sent.some((m) => m.text.includes("y2 OK-ONE")));
+
+// Y4 (F4): عکس مبهم بعد از موفقیت متن، در /review و ادامه قابل بازیابی؛ بدون تصمیم مالک تکرار نمی‌شه
+raw.exec("UPDATE posts SET sent_at_utc = 1 WHERE sent_at_utc IS NULL");
+atTehranHour(12);
+addPost("telegram:test_channel_a", "y4 with photo"); raw.exec("UPDATE posts SET image_url = 'https://img.example/y4.jpg' WHERE text = 'y4 with photo'");
+await prepareBatch(env); const Y4 = batchOf("y4 with photo");
+reset(); G.photoFail = "network";
+await hook(cbOwner(`sb:s:${Y4}`));
+const y4Upd = q1("SELECT update_id AS u FROM update_queue WHERE state = 'needs_review' ORDER BY update_id DESC LIMIT 1")?.u;
+T("Y4 text sent, photo ambiguous: batch stays sending; update needs_review(ambiguous)", G.sent.some((m) => m.text.includes("y4 with photo")) && batchState(Y4) === "sending" && y4Upd);
+reset(); await hook(ownerDm("/review"));
+T("Y4 /review shows stalled batch with photo count and continue button", owner.map((m) => JSON.stringify(m)).join("\n").includes(`sb:c:${Y4}`));
+clock.ms += 200 * 1000;
+reset(); await hook(cbOwner(`sb:c:${Y4}`));
+T("Y4 continue before owner decision: ambiguous photo not resent", G.singlePhotos.length === 0 && batchState(Y4) === "sending");
+reset(); await hook(ownerDm(`/resolve_update ${y4Upd} not_applied`));
+reset(); await hook(cbOwner(`sb:c:${Y4}`));
+T("Y4 after owner not_applied: photo sent once by continue; batch sent; texts not repeated", G.singlePhotos.length === 1 && G.sent.length === 0 && batchState(Y4) === "sent");
+
+// Y5 (F5): سکوت وسط دسته؛ واحد بعدی نمی‌رسه، باقی‌مانده برای ادامه حفظ می‌شه
+raw.exec("UPDATE posts SET sent_at_utc = 1 WHERE sent_at_utc IS NULL");
+atTehranHour(12);
+const y5 = Array.from({ length: 3 }, (_, i) => `y5 بخش${i} ` + "متن ".repeat(700));
+y5.forEach((t) => addPost("telegram:test_channel_a", t));
+await prepareBatch(env); const Y5 = batchOf(y5[0]);
+reset(); G.quietAfterOne = true;
+await hook(cbOwner(`sb:s:${Y5}`));
+T("Y5 quiet starts after first message: second message not sent, batch sending", G.sent.filter((m) => m.text.includes("y5 بخش")).length === 1 && batchState(Y5) === "sending");
+atTehranHour(12); reset(); await hook(cbOwner(`sb:c:${Y5}`));
+T("Y5 continue after quiet: remaining units sent once each", G.sent.length === 2 && batchState(Y5) === "sent");
+
+// Y6 (F6): رقابت تأیید با رد و انقضا؛ بازنده هیچ پیامی نمی‌فرسته
+for (const [label, to] of [["reject", "rejected"], ["expire", "expired"]]) {
+  raw.exec("UPDATE posts SET sent_at_utc = 1 WHERE sent_at_utc IS NULL");
+  atTehranHour(12);
+  addPost("telegram:test_channel_a", `y6 ${label} race`);
+  await prepareBatch(env); const Y6 = batchOf(`y6 ${label} race`);
+  reset();
+  let fired = false;
+  chk = (sql) => { if (!fired && sql.startsWith("UPDATE scrape_batches SET state = 'sending'")) { fired = true; raw.prepare(`UPDATE scrape_batches SET state = '${to}' WHERE id = ? AND state = 'pending'`).run(Y6); } };
+  await hook(cbOwner(`sb:s:${Y6}`));
+  chk = null;
+  T(`Y6 approve lost CAS to ${label}: nothing sent, batch stays ${to}`, fired && G.sent.length === 0 && batchState(Y6) === to);
+}
 
 console.log(fails === 0 ? "ALL PASS" : `${fails} FAILED`);
 process.exit(fails ? 1 : 0);
