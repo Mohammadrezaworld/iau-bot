@@ -40,7 +40,7 @@ export async function statusReport(env) {
     `تأیید مالک (اثر انجام شد): ${n("owner_applied")}`,
     `رد توسط تلگرام (محتوا، ارسال نشد): ${n("telegram_refused")}`,
     `کنار گذاشته‌شده: سیل ${n("held_flood")} · رد ${n("rejected")} · بدون ارسال ${n("skipped_resume")} · فوتر ${n("junk")} · قدیمی/بی‌تاریخ/آزمایشی/اولیه ${n("old") + n("undated") + n("dry_run") + n("baseline")}`,
-    `ارسال‌شده‌ی قبل از این نسخه (بدون جزئیات): ${legacy}`,
+    `علامت‌خورده‌ی قبل از ثبت جزئیات: ${legacy}`,
     `معوق (هنوز بررسی نشده): ${unsent}`,
     stalled ? `دسته‌ی ناقص منتظر ادامه: ${stalled} (در /review)` : null,
   ].filter(Boolean).join("\n");
