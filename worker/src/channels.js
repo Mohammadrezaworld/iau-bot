@@ -220,9 +220,10 @@ export async function sendChunk(env, groupId, blocks, label, guard = null) {
 
 // عکس‌های یک کانال: یک عکس با sendPhoto، دو تا ده عکس با sendMediaGroup (آلبوم یک‌عکسی معتبر نیست).
 // خطای قطعی تلگرام پرت می‌شه (refused)؛ خطای مبهم هم همین‌طور؛ caller تصمیم می‌گیره.
-export async function sendPhotos(env, groupId, label, photos) {
+// captionText: متن پست زیر یک عکس (بدون قالب، زیر ۱۰۲۴ کاراکتر)؛ اگه نباشه، برچسب کانال
+export async function sendPhotos(env, groupId, label, photos, captionText = null) {
   if (photos.length === 1) {
-    const res = await tg(env, "sendPhoto", { chat_id: groupId, photo: photos[0].image_url, caption: label });
+    const res = await tg(env, "sendPhoto", { chat_id: groupId, photo: photos[0].image_url, caption: captionText || label });
     return res && res.message_id ? res.message_id : null;
   }
   const res = await tg(env, "sendMediaGroup", {
