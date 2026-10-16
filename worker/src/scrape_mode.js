@@ -147,7 +147,12 @@ export async function handleScrapeSettingsCallback(env, cq, ctx) {
 
   if (action === "r") {
     // بروزرسانی پنل: همان پیام با وضعیت تازه ویرایش می‌شود (توکن تأیید خودکار دست‌نخورده می‌ماند)
-    await tg(env, "editMessageText", { chat_id: chatId, message_id: cq.message.message_id, text: await panelText(env), reply_markup: panelMarkup(mode, env), disable_web_page_preview: true });
+    try {
+      await tg(env, "editMessageText", { chat_id: chatId, message_id: cq.message.message_id, text: await panelText(env), reply_markup: panelMarkup(mode, env), disable_web_page_preview: true });
+    } catch (e) {
+      // بدون تغییر: تلگرام «not modified» می‌دهد؛ پنل از قبل تازه است
+      if (!/message is not modified/.test(String(e))) throw e;
+    }
     return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
   }
   if (action === "m") {
