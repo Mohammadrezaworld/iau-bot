@@ -100,7 +100,12 @@ const STATUS_MARKUP = { inline_keyboard: [[{ text: "🔄 بروزرسانی", ca
 // دکمه‌ی «بروزرسانی» زیر وضعیت ارسال: همان پیام را با وضعیت تازه ویرایش می‌کند (فقط ادمین، از index.js)
 export async function handleStatusRefresh(env, cq) {
   const m = cq.message;
-  await tg(env, "editMessageText", { chat_id: m.chat.id, message_id: m.message_id, text: await scrapeStatusText(env), reply_markup: STATUS_MARKUP });
+  try {
+    await tg(env, "editMessageText", { chat_id: m.chat.id, message_id: m.message_id, text: await scrapeStatusText(env), reply_markup: STATUS_MARKUP });
+  } catch (e) {
+    // وضعیتی که تغییر نکرده: تلگرام «not modified» می‌دهد؛ یعنی پیام از قبل تازه است
+    if (!/message is not modified/.test(String(e))) throw e;
+  }
   return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
 }
 
