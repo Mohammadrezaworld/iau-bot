@@ -11,6 +11,7 @@ import { handleJozvePost, handleJozveCommand, handleJozveCallback, handleJozveRe
 import { cleanPostText, inTehranQuietHours } from "./channels.js";
 import { prepareBatch, handleBatchCallback, expireBatches, listStalledBatches, approveBatch } from "./batches.js";
 import { scrapeSettingsCommand, handleScrapeSettingsCallback } from "./scrape_mode.js";
+import { ADMIN_MENU } from "./admin_menu.js";
 import { isAdmin, isOwner } from "./admin.js";
 import { buildBackup } from "./admin.js";
 import { sendJsonDocument, tg } from "./telegram.js";
@@ -239,6 +240,15 @@ async function dispatchUpdate(env, update, ctx = null) {
       await tryDeleteMessage(env, cq.message.chat.id, cq.message.message_id);
       await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
     } else if (cq.message.chat.type === "private" && (await isAdmin(env, cq.from.id))) {
+      if (data.startsWith("am:")) {
+        // دکمه‌ی منوی ادمین: همان دستور متنی از مسیر عادی پیام اجرا می‌شه (مجوز مالک و ادمین همون‌جا چک می‌شه)
+        const item = ADMIN_MENU[Number(data.slice(3))];
+        if (item) {
+          const nowMs = Date.now();
+          await dispatchUpdate(env, { message: { message_id: -nowMs, date: Math.floor(nowMs / 1000), chat: cq.message.chat, from: cq.from, text: item.cmd } });
+        }
+        return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+      }
       if (data.startsWith("mu:")) await handleMetroUploadCallback(env, cq);
       else if (data.startsWith("kw:")) await handleKeywordCallback(env, cq);
       else if (data.startsWith("hol:")) await handleHolidayCallback(env, cq);

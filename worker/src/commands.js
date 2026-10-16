@@ -17,6 +17,7 @@ import { setQuietCommand } from "./channels.js";
 import { editList } from "./wizard.js";
 import { jozveListText, jozveRemoveList, jozveCategoryCommand, openDmMenu, dmIsMember, sendGate, DM_NOT_MEMBER } from "./jozve.js";
 import { scrapeLogText } from "./monitor.js";
+import { adminMenu } from "./admin_menu.js";
 
 // دستورهایی که سطح content هم مجازه
 const CONTENT_CMDS = new Set([
@@ -169,8 +170,9 @@ export async function handleAdminMessage(env, message) {
   }
 
   if (PUBLIC_CMDS.includes(cmd)) return runPublic(env, chatId, cmd);
-  // ادمین‌ها هم منوی شخصی و جدول مترو رو در پیوی دارن (همون مسیر کاربر عادی)
-  if (cmd === "/menu" || cmd === "/jozve") return openDmMenu(env, userId);
+  // /start و /menu برای ادمین: منوی دکمه‌ای ادمین؛ /jozve: منوی جزوه‌ها (همون مسیر کاربر عادی)
+  if (cmd === "/start" || cmd === "/menu") return adminMenu(env, chatId, userId, await isOwner(env, userId));
+  if (cmd === "/jozve") return openDmMenu(env, userId);
   if (cmd === "/metro") return handleMetroCommand(env, message);
 
   // افزودن بدون آرگومان: مرحله‌به‌مرحله. حذف بدون آرگومان: لیست با دکمه
