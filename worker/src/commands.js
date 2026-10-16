@@ -4,18 +4,20 @@ import { isAdmin, isOwner, audit, buildBackup, statusText, logText, getRole } fr
 import { answerPublic, getSetting, sendCachedAnswer } from "./public.js";
 import { parseDateInput, normalizeDigits } from "./jalali.js";
 import { startWizard, handleWizardText, removeList } from "./wizard.js";
-import { updatesText, flushPosts, scrapeCommand } from "./channels.js";
+import { updatesText, scrapeCommand } from "./channels.js";
 import { tg } from "./telegram.js";
 import { faDate } from "./calendar.js";
 import { handleManage, publicContacts, publicResources, publicEvents, MANAGE_HELP } from "./manage.js";
 import { handleMetroDocument, metroInfoText, handleMetroCommand } from "./metro.js";
 import { keywordCommand } from "./keywords.js";
+import { resumeCommand } from "./scrape_mode.js";
 import { holidayCommand } from "./holidays.js";
 import { undoLast } from "./undo.js";
 import { setQuietCommand } from "./channels.js";
 import { editList } from "./wizard.js";
 import { jozveListText, jozveRemoveList, jozveCategoryCommand, openDmMenu, dmIsMember, sendGate, DM_NOT_MEMBER } from "./jozve.js";
 import { scrapeLogText } from "./monitor.js";
+import { adminMenu } from "./admin_menu.js";
 
 // دستورهایی که سطح content هم مجازه
 const CONTENT_CMDS = new Set([
@@ -168,8 +170,9 @@ export async function handleAdminMessage(env, message) {
   }
 
   if (PUBLIC_CMDS.includes(cmd)) return runPublic(env, chatId, cmd);
-  // ادمین‌ها هم منوی شخصی و جدول مترو رو در پیوی دارن (همون مسیر کاربر عادی)
-  if (cmd === "/menu" || cmd === "/jozve") return openDmMenu(env, userId);
+  // /start و /menu برای ادمین: منوی دکمه‌ای ادمین؛ /jozve: منوی جزوه‌ها (همون مسیر کاربر عادی)
+  if (cmd === "/start" || cmd === "/menu") return adminMenu(env, chatId, userId, await isOwner(env, userId));
+  if (cmd === "/jozve") return openDmMenu(env, userId);
   if (cmd === "/metro") return handleMetroCommand(env, message);
 
   // افزودن بدون آرگومان: مرحله‌به‌مرحله. حذف بدون آرگومان: لیست با دکمه
@@ -215,8 +218,9 @@ export async function handleAdminMessage(env, message) {
       return sendMessage(env, chatId, await undoLast(env, userId));
     case "/set_quiet":
       return setQuietCommand(env, chatId, userId, arg);
-    case "/scrape_pause":
     case "/scrape_resume":
+      return resumeCommand(env, chatId, userId, arg, await isOwner(env, userId));
+    case "/scrape_pause":
     case "/scrape_status":
       return scrapeCommand(env, chatId, userId, cmd, arg, await isOwner(env, userId));
     case "/keyword_list":

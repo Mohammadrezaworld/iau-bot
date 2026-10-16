@@ -5,6 +5,7 @@ import { audit } from "./admin.js";
 import { normalizeDigits } from "./jalali.js";
 import { pushUndo } from "./undo.js";
 import { recordEvent } from "./monitor.js";
+import { setOutcome, statusReport } from "./outcomes.js";
 
 const CHANNEL_LABELS = {
   "bale:iaut_fani": "بله – آزمایشگاه‌های دانشکده",
@@ -53,7 +54,32 @@ export async function scrapePaused(env) {
   return String(await getSetting(env, "scrape_paused", "0")) === "1";
 }
 
-async function setScrapePaused(env, on) {
+// حالت ارسال: توقف (paused) > خودکار (scrape_auto=1) > تأیید دستی (پیش‌فرض، وقتی تنظیمی نیست)
+export async function scrapeMode(env) {
+  return (await readModeSnapshot(env)).mode;
+}
+
+// یک خواندن از سه تنظیم حالت با هم؛ نوشتن حالت هم یک تراکنش است (writeMode در scrape_mode.js)
+// پس خواننده یا حالت قدیمی را می‌بیند یا جدید را؛ cutoff نیمه‌کاره دیده نمی‌شود.
+// قفل انتشار خودکار: بدون SCRAPE_AUTO_ALLOWED=1 در محیط deploy، حالت خودکار هرگز مؤثر نیست،
+// حتی اگر scrape_auto=1 در D1 مانده باشد.
+export function autoAllowed(env) {
+  return String(env.SCRAPE_AUTO_ALLOWED || "") === "1";
+}
+
+export async function readModeSnapshot(env) {
+  const { results } = await env.DB.prepare(
+    "SELECT key, value FROM settings WHERE key IN ('scrape_paused', 'scrape_auto', 'scrape_auto_since')"
+  ).all();
+  const m = Object.fromEntries(results.map((r) => [r.key, r.value]));
+  const paused = String(m.scrape_paused ?? "0") === "1";
+  const storedAuto = String(m.scrape_auto ?? "0") === "1";
+  const auto = storedAuto && autoAllowed(env);
+  const since = Number(m.scrape_auto_since ?? 0);
+  return { paused, auto, storedAuto, since, mode: paused ? "stop" : auto ? "auto" : "manual" };
+}
+
+export async function setScrapePaused(env, on) {
   await env.DB.prepare(
     "INSERT INTO settings (key, value) VALUES ('scrape_paused', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
   ).bind(on ? "1" : "0").run();
@@ -65,29 +91,34 @@ async function unsentCount(env) {
 }
 
 // /scrape_pause · /scrape_resume [skip] · /scrape_status (فقط مالک؛ status برای همه‌ی ادمین‌ها)
+async function scrapeStatusText(env) {
+  const paused = await scrapePaused(env);
+  return `ارسال به گروه: ${paused ? "متوقف" : "فعال"}\n${await statusReport(env)}`;
+}
+const STATUS_MARKUP = { inline_keyboard: [[{ text: "🔄 بروزرسانی", callback_data: "st:r" }]] };
+
+// دکمه‌ی «بروزرسانی» زیر وضعیت ارسال: همان پیام را با وضعیت تازه ویرایش می‌کند (فقط ادمین، از index.js)
+export async function handleStatusRefresh(env, cq) {
+  const m = cq.message;
+  try {
+    await tg(env, "editMessageText", { chat_id: m.chat.id, message_id: m.message_id, text: await scrapeStatusText(env), reply_markup: STATUS_MARKUP });
+  } catch (e) {
+    // وضعیتی که تغییر نکرده: تلگرام «not modified» می‌دهد؛ یعنی پیام از قبل تازه است
+    if (!/message is not modified/.test(String(e))) throw e;
+  }
+  return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+}
+
 export async function scrapeCommand(env, chatId, userId, cmd, arg, owner) {
   if (cmd === "/scrape_status") {
-    const paused = await scrapePaused(env);
-    return sendMessage(env, chatId, `ارسال به گروه: ${paused ? "متوقف" : "فعال"}\nپست‌های ارسال‌نشده: ${await unsentCount(env)}`);
+    return tg(env, "sendMessage", { chat_id: chatId, text: await scrapeStatusText(env), reply_markup: STATUS_MARKUP });
   }
   if (!owner) return sendMessage(env, chatId, "این دستور فقط برای مالک ربات است.");
   if (cmd === "/scrape_pause") {
+    // /scrape_pause همان حالت «توقف انتشار» پنل است؛ ادامه فقط از همان سرویس (commands.js → resumeCommand)
     await setScrapePaused(env, true);
     await audit(env, userId, "scrape_pause", "");
     return sendMessage(env, chatId, "ارسال پست‌ها به گروه متوقف شد. پست‌ها همچنان ذخیره می‌شن.\nبرای ادامه: /scrape_resume");
-  }
-  if (cmd === "/scrape_resume") {
-    // پیش‌فرض: پست‌های معوقِ دوران توقف ارسال نمی‌شن، فقط پست‌های جدید بعد از ادامه.
-    // /scrape_resume all: معوق‌ها هم ارسال می‌شن (با احتیاط؛ ممکنه چند پست یک‌جا بیاد).
-    const all = normalizeForMatch(arg) === "all";
-    const before = await unsentCount(env);
-    if (!all) {
-      await env.DB.prepare("UPDATE posts SET sent_at_utc = ? WHERE sent_at_utc IS NULL").bind(nowUtc()).run();
-    }
-    await setScrapePaused(env, false);
-    await audit(env, userId, "scrape_resume", all ? `all ${before}` : `skip ${before}`);
-    if (all) return sendMessage(env, chatId, `ارسال دوباره فعال شد. ${before} پست معوق در صف ارسال است و به‌زودی می‌رن.`);
-    return sendMessage(env, chatId, `ارسال دوباره فعال شد. ${before} پست معوق از دوران توقف ارسال نشد؛ فقط پست‌های جدید از این به بعد می‌رن.`);
   }
   return null;
 }
@@ -132,113 +163,91 @@ function chunkMessages(blocks) {
 const CONTENT_ERROR = /too long|text is empty|parse entities|message text/i;
 const MAX_LINE = 4000;
 
-// بخش را یک‌جا می‌فرسته. اگه تلگرام به‌خاطر محتوا رد کرد، خط‌ها یکی‌یکی و کوتاه‌شده فرستاده می‌شن
-// تا یک پست خراب کل صف رو متوقف نکنه. خطاهای گروه/دسترسی (مثل chat not found) دوباره پرتاب می‌شن
-// تا پست‌ها در صف بمونن و چیزی علامت ارسال نخوره.
-// اول با HTML (کوت‌ها)؛ اگه بلوکی رد شد، همون بلوک با متن ساده فرستاده می‌شه تا تگ خام دیده نشه.
-async function sendBlocksSafely(env, groupId, blocks, label) {
+// یک واحد = یک پیام تلگرام = یک اثر. اول HTML؛ اگه محتوا رد شد، همان واحد با متن ساده (باز هم یک پیام).
+// هیچ‌وقت چند پیام زیر یک اثر فرستاده نمی‌شه، پس تکرار بخش موفق در retry ممکن نیست.
+// رد محتوایی (هر دو قالب) قطعی و بدون ارسال است؛ با contentRefused مشخص می‌شه تا caller واحد را تجزیه کند.
+// خطاهای گروه/دسترسی و خطای شبکه همان‌طور که بودند پرت می‌شن.
+async function sendBlocksSafely(env, groupId, blocks, label, guard = null) {
+  const html = blocks.map((b) => b.html).join("\n");
   try {
-    await sendHtml(env, groupId, blocks.map((b) => b.html).join("\n"));
-    return;
+    return (await sendHtml(env, groupId, html)).message_id;
   } catch (err) {
     if (!CONTENT_ERROR.test(err.message || "")) throw err;
   }
-  for (const b of blocks) {
-    try {
-      await sendHtml(env, groupId, b.html);
-      continue;
-    } catch (err) {
-      if (!CONTENT_ERROR.test(err.message || "")) throw err;
-    }
-    try {
-      await tg(env, "sendMessage", { chat_id: groupId, text: b.plain, disable_web_page_preview: true });
-    } catch (err) {
-      if (!CONTENT_ERROR.test(err.message || "")) throw err;
-      await recordEvent(env, "system", "", "error", `send: ${label} — ${err.message}`);
-    }
+  // تلاش متن ساده هم تماس تازه با تلگرام است: قبل از آن مجوز و سکوت/توقف دوباره بررسی می‌شود
+  if (guard) {
+    const why = await guard();
+    if (why) { const e = new Error(`not sent: ${why}`); e.stopped = why; throw e; }
+  }
+  const plain = blocks.map((b) => b.plain).join("\n");
+  try {
+    const res = await tg(env, "sendMessage", { chat_id: groupId, text: plain, disable_web_page_preview: true });
+    return res.message_id;
+  } catch (err) {
+    if (!CONTENT_ERROR.test(err.message || "")) throw err;
+    const e = new Error(err.message || "content refused");
+    e.refused = true;
+    e.contentRefused = true;
+    e.label = label;
+    throw e;
   }
 }
 
-// پست‌های ارسال‌نشده‌ی یک کانال (یا همه‌ی کانال‌ها) رو به گروه می‌فرسته
-export async function flushPosts(env, source = null, channel = null) {
-  if (await inTehranQuietHours(env)) return { skipped: "quiet_hours" };
-  if (await scrapePaused(env)) return { skipped: "paused" };
-  const groupId = await getSetting(env, "group_id", "");
-  if (!groupId) return { skipped: "no_group" };
+// بلوک یک پست: خط اول بولد (عنوان)، متن داخل کوت؛ کوت‌های بلند قابل باز شدن.
+// پست مهم کلاً بولد می‌شه. بدون ایموجی.
+function postBlock(p, isImp) {
+  const body0 = (p.text || "").trim() || "(بدون متن)";
+  const body = body0.length > MAX_LINE ? body0.slice(0, MAX_LINE) + "…" : body0;
+  const nl = body.indexOf("\n");
+  let first;
+  let rest;
+  if (nl >= 0) { first = body.slice(0, nl).trim(); rest = body.slice(nl + 1).trim(); }
+  else if (body.length <= 120) { first = body; rest = ""; }
+  else { first = ""; rest = body; }
+  const restHtml = rest ? (isImp ? `<b>${escHtml(rest)}</b>` : escHtml(rest)) : "";
+  const inner = [first ? `<b>${escHtml(first)}</b>` : "", restHtml].filter(Boolean).join("\n");
+  const expandable = body.length > 200;
+  return {
+    html: `<blockquote${expandable ? " expandable" : ""}>${inner}</blockquote>`,
+    plain: `${isImp ? "" : "• "}${body}`,
+  };
+}
 
-  const where = source ? "WHERE sent_at_utc IS NULL AND source = ? AND channel = ?" : "WHERE sent_at_utc IS NULL";
-  const binds = source ? [source, channel] : [];
-  const { results } = await env.DB.prepare(
-    `SELECT * FROM posts ${where} ORDER BY source, channel, first_seen_utc, id LIMIT 200`
-  ).bind(...binds).all();
-  if (!results.length) return { sent: 0 };
-
-  // پست‌های بله: فوتر (بازدید و ساعت) پیش از ارسال حذف می‌شه (ردیف‌های قدیمی هم شامل می‌شن)،
-  // و ردیف‌های بی‌متن (فقط عدد/ساعت) بدون ارسال علامت می‌خورن. پست تلگرام دست‌نخورده می‌مونه.
-  const toSend = [];
-  const junkIds = [];
-  for (const p of results) {
-    if (p.source !== "bale") {
-      toSend.push(p);
-    } else if (isJunkPost(p.text)) {
-      junkIds.push(p.id);
-    } else {
-      toSend.push({ ...p, text: cleanPostText(p.text) });
-    }
-  }
-  for (const id of junkIds) {
-    await env.DB.prepare("UPDATE posts SET sent_at_utc = ? WHERE id = ?").bind(nowUtc(), id).run();
-  }
-  if (!toSend.length) return { sent: 0 };
-
-  const keywords = await keywordsList(env);
+// بخش‌بندی یک فهرست پست: هر کانال یک بخش (عنوان + پست‌ها + عکس‌ها). مهم‌ها اول می‌آن.
+export function buildSections(posts, keywords) {
   const groups = {};
-  for (const p of toSend) (groups[`${p.source}:${p.channel}`] ||= []).push(p);
-
-  let sent = 0;
-  for (const [key, posts] of Object.entries(groups)) {
+  for (const p of posts) (groups[`${p.source}:${p.channel}`] ||= []).push(p);
+  return Object.entries(groups).map(([key, ps]) => {
     const label = CHANNEL_LABELS[key] || key;
-    const important = posts.filter((p) => isImportant(p.text, keywords));
-    const normal = posts.filter((p) => !isImportant(p.text, keywords));
-    const ordered = [...important, ...normal];
-
-    // عنوان کانال بولد؛ هر پست داخل کوت (blockquote) بدون جمع‌شدن. پست مهم بولد می‌شه. بدون ایموجی.
+    const imp = (p) => isImportant(p.text, keywords);
+    const ordered = [...ps.filter(imp), ...ps.filter((p) => !imp(p))];
     const blocks = [{ html: `<b>${escHtml(label)}</b>`, plain: label }];
-    for (const p of ordered) {
-      const body0 = (p.text || "").trim() || "(بدون متن)";
-      const body = body0.length > MAX_LINE ? body0.slice(0, MAX_LINE) + "…" : body0;
-      const isImp = important.includes(p);
-      const inner = escHtml(body);
-      blocks.push({
-        html: `<blockquote>${isImp ? `<b>${inner}</b>` : inner}</blockquote>`,
-        plain: `${isImp ? "" : "• "}${body}`,
-      });
-    }
-    const chunks = chunkMessages(blocks);
-    for (const chunk of chunks) {
-      await sendBlocksSafely(env, groupId, chunk, label);
-    }
-
-    // عکس‌ها: آلبوم با حداکثر ۱۰ عکس. اگه تلگرام نتونست بگیره، متن پیام همچنان رفته.
+    for (const p of ordered) blocks.push({ ...postBlock(p, imp(p)), postId: p.id });
     const photos = ordered.filter((p) => /^https:\/\//.test(p.image_url || "")).slice(0, 10);
-    if (photos.length) {
-      try {
-        await tg(env, "sendMediaGroup", {
-          chat_id: groupId,
-          media: photos.map((p, i) => ({ type: "photo", media: p.image_url, ...(i === 0 ? { caption: label } : {}) })),
-        });
-      } catch (err) {
-        console.error("photo_error", err && err.message ? err.message : "unknown");
-      }
-    }
+    return { key, label, blocks, photos, ids: ordered.map((p) => p.id) };
+  });
+}
 
-    const ids = ordered.map((p) => p.id);
-    for (const id of ids) {
-      await env.DB.prepare("UPDATE posts SET sent_at_utc = ? WHERE id = ?").bind(nowUtc(), id).run();
-    }
-    sent += ids.length;
+export { chunkMessages };
+
+// ارسال یک بخش از پیام‌ها به گروه؛ شناسه‌ی آخرین پیام تلگرام رو برمی‌گردونه
+export async function sendChunk(env, groupId, blocks, label, guard = null) {
+  return sendBlocksSafely(env, groupId, blocks, label, guard);
+}
+
+// عکس‌های یک کانال: یک عکس با sendPhoto، دو تا ده عکس با sendMediaGroup (آلبوم یک‌عکسی معتبر نیست).
+// خطای قطعی تلگرام پرت می‌شه (refused)؛ خطای مبهم هم همین‌طور؛ caller تصمیم می‌گیره.
+// captionText: متن پست زیر یک عکس (بدون قالب، زیر ۱۰۲۴ کاراکتر)؛ اگه نباشه، برچسب کانال
+export async function sendPhotos(env, groupId, label, photos, captionText = null) {
+  if (photos.length === 1) {
+    const res = await tg(env, "sendPhoto", { chat_id: groupId, photo: photos[0].image_url, caption: captionText || label });
+    return res && res.message_id ? res.message_id : null;
   }
-  return { sent };
+  const res = await tg(env, "sendMediaGroup", {
+    chat_id: groupId,
+    media: photos.map((p, i) => ({ type: "photo", media: p.image_url, ...(i === 0 ? { caption: label } : {}) })),
+  });
+  return Array.isArray(res) && res[0] ? res[0].message_id : null;
 }
 
 // /updates: وضعیت آخرین بررسی هر کانال از کش (بدون اسکرپ جدید)
