@@ -205,6 +205,17 @@ async function batchPosts(env, bid, onlyUnsent) {
 function photoSections(posts) {
   return buildSections(posts.map(forSend), []).filter((s) => s.photos.length).map((s) => ({ key: s.key, label: s.label, photos: s.photos }));
 }
+// پست تنها عکسِ بخش با متن کوتاه (≤ ۱۰۰۰ کاراکتر): متنش زیر عکس می‌آد. عضویت از همه‌ی پست‌های دسته گرفته می‌شه تا پایدار بمونه.
+const CAPTION_MAX = 1000;
+function captionPostIds(posts) {
+  const ids = new Set();
+  for (const sec of photoSections(posts)) {
+    if (sec.photos.length !== 1) continue;
+    const p = sec.photos[0];
+    if ((p.text || "").trim().length <= CAPTION_MAX) ids.add(p.id);
+  }
+  return ids;
+}
 // بخش‌های عکسی که تأیید «done» ندارن (صرف‌نظرشده هم done حساب می‌شه)
 async function pendingPhotoSections(env, bid) {
   const out = [];
@@ -243,8 +254,9 @@ export async function approveBatch(env, ctx, bid) {
   const unplanned = (await batchPosts(env, bid, true)).filter((r) => !r.unit).map(forSend);
   if (unplanned.length) await planUnits(env, bid, unplanned, keywords);
   const byUnit = new Map();
+  const captionIds = captionPostIds(await batchPosts(env, bid, false));
   for (const r of await batchPosts(env, bid, true)) {
-    if (!r.unit) continue;
+    if (!r.unit || captionIds.has(r.id)) continue; // پست کپشن‌دار جدا از متن و زیر عکس فرستاده می‌شه
     if (!byUnit.has(r.unit)) byUnit.set(r.unit, []);
     byUnit.get(r.unit).push(forSend(r));
   }
@@ -315,18 +327,22 @@ export async function approveBatch(env, ctx, bid) {
 
   // عکس‌ها: هر بخش یک اثر مستقل. موفقیت متن، عکس ناتمام را از صف خارج نمی‌کنه.
   if (!stoppedBy && !busy) {
+    const capIds = captionPostIds(await batchPosts(env, bid, false));
     for (const sec of photoSections(await batchPosts(env, bid, false))) {
       stoppedBy = await stopReason(env, ctx);
       if (stoppedBy) break;
       const pkey = photoKey(bid, sec.key);
+      // پست کپشن‌دار: متنش زیر عکس رفته؛ بعد از موفقیت عکس (یا اگه قبلاً done بوده) ارسال‌شده ثبت می‌شه
+      const cap = sec.photos.length === 1 && capIds.has(sec.photos[0].id) ? sec.photos[0] : null;
       const claim = await claimExternal(env, ctx, pkey, "scrape_batch");
       if (claim.status === "lease_lost") throw new LeaseLostError();
+      if (claim.status === "done" && cap) await markSent(env, [cap.id]);
       if (claim.status !== "claimed") continue; // done: کامل؛ busy/ambiguous: بماند برای مالک یا اجرای دیگر
       stoppedBy = await stopReason(env, ctx);
       if (stoppedBy) { await finishExternal(env, ctx, pkey, { ok: false, error: `not_sent_${stoppedBy}` }); break; }
       let msgId;
       try {
-        msgId = await sendPhotos(env, groupId, sec.label, sec.photos);
+        msgId = await sendPhotos(env, groupId, sec.label, sec.photos, cap ? (cap.text || "").trim() || null : null);
       } catch (err) {
         if (err && err.refused) {
           // تلگرام صریحاً رد کرده: عکس نرفته؛ با «ادامه» دوباره امتحان می‌شه
@@ -338,6 +354,7 @@ export async function approveBatch(env, ctx, bid) {
       }
       const recorded = await finishExternal(env, ctx, pkey, { ok: true, msgId, result: `photos ${sec.label}` });
       if (!recorded) throw new AmbiguousError(pkey);
+      if (cap) { await markSent(env, [cap.id]); sentNow += 1; }
     }
   }
 
@@ -372,9 +389,16 @@ async function closeRefused(env, ids) {
 export async function skipPhotos(env, bid) {
   let n = 0;
   const nowS = Math.floor(Date.now() / 1000);
+  const capIds = captionPostIds(await batchPosts(env, bid, false));
   for (const sec of await pendingPhotoSections(env, bid)) {
     if (sec.state === "intent") continue;
     const key = photoKey(bid, sec.key);
+    // پست کپشن‌دار: عکسش صرف‌نظر می‌شه ولی متنش نباید گم بشه؛ اول متن جدا فرستاده می‌شه، بعد اثر عکس بسته می‌شه
+    const cap = sec.photos.length === 1 && capIds.has(sec.photos[0].id) ? sec.photos[0] : null;
+    if (cap) {
+      await tg(env, "sendMessage", { chat_id: await getSetting(env, "group_id", ""), text: `${sec.label}\n${(cap.text || "").trim()}` });
+      await markSent(env, [cap.id]);
+    }
     if (sec.state === "none") {
       await env.DB.prepare("INSERT OR IGNORE INTO effects (op_key, kind, state, update_id, lease, result, at_utc) VALUES (?, 'scrape_batch', 'done', NULL, '', 'owner_skipped', ?)").bind(key, nowS).run();
     } else {

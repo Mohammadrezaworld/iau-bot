@@ -39,7 +39,7 @@ db.prepare = (sql) => { const st = origPrepare(sql); const b = st.bind; st.bind 
 // ---- تلگرام شبیه‌سازی‌شده
 const ok = (result) => Response.json({ ok: true, result });
 let mid = 1000;
-const G = { sent: [], photos: [], singlePhotos: [], fail: null, quietAfterOne: false, failAt: null, dropToken: null, photoFail: null }; // fail: 'network' | 'refuse' (یک‌بار، برای پیام گروه)
+const G = { sent: [], photos: [], singlePhotos: [], captions: [], fail: null, quietAfterOne: false, failAt: null, dropToken: null, photoFail: null }; // fail: 'network' | 'refuse' (یک‌بار، برای پیام گروه)
 const owner = []; const answers = []; const edits = []; const alerts = [];
 globalThis.fetch = async (u, o) => {
   const method = String(u).split("/").pop();
@@ -53,7 +53,7 @@ globalThis.fetch = async (u, o) => {
     if (method === "sendPhoto") {
       if (G.photoFail === "network") { G.photoFail = null; throw new Error("socket hang up"); }
       if (G.photoFail === "refuse") { G.photoFail = null; return Response.json({ ok: false, error_code: 400, description: "Bad Request: chat not found" }, { status: 400 }); }
-      G.singlePhotos.push(b.photo); return ok({ message_id: ++mid });
+      G.singlePhotos.push(b.photo); G.captions.push(b.caption); return ok({ message_id: ++mid });
     }
     if (method === "sendMessage") {
       G.gc = (G.gc || 0) + 1;
@@ -456,7 +456,7 @@ await prepareBatch(env); const Y4 = batchOf("y4 with photo");
 reset(); G.photoFail = "network";
 await hook(cbOwner(`sb:s:${Y4}`));
 const y4Upd = q1("SELECT update_id AS u FROM update_queue WHERE state = 'needs_review' ORDER BY update_id DESC LIMIT 1")?.u;
-T("Y4 text sent, photo ambiguous: batch stays sending; update needs_review(ambiguous)", G.sent.some((m) => m.text.includes("y4 with photo")) && batchState(Y4) === "sending" && y4Upd);
+T("Y4 caption photo ambiguous: text not sent separately; batch stays sending; update needs_review(ambiguous)", !G.sent.some((m) => m.text.includes("y4 with photo")) && batchState(Y4) === "sending" && y4Upd);
 reset(); await hook(ownerDm("/review"));
 T("Y4 /review shows stalled batch with photo count and continue button", owner.map((m) => JSON.stringify(m)).join("\n").includes(`sb:c:${Y4}`));
 clock.ms += 200 * 1000;
@@ -465,6 +465,17 @@ T("Y4 continue before owner decision: ambiguous photo not resent", G.singlePhoto
 reset(); await hook(ownerDm(`/resolve_update ${y4Upd} not_applied`));
 reset(); await hook(cbOwner(`sb:c:${Y4}`));
 T("Y4 after owner not_applied: photo sent once by continue; batch sent; texts not repeated", G.singlePhotos.length === 1 && G.sent.length === 0 && batchState(Y4) === "sent");
+
+// Y6c) پست تنها عکس با متن کوتاه: متن زیر عکس، بدون پیام متنی جدا، و پست ارسال‌شده ثبت می‌شه
+raw.exec("UPDATE posts SET sent_at_utc = 1 WHERE sent_at_utc IS NULL");
+atTehranHour(12);
+addPost("telegram:test_channel_a", "caption ok"); raw.exec("UPDATE posts SET image_url = 'https://img.example/cap.jpg' WHERE text = 'caption ok'");
+await prepareBatch(env); const YC = batchOf("caption ok");
+reset(); G.captions.length = 0;
+await hook(cbOwner(`sb:s:${YC}`));
+T("Y6c caption: photo carries post text as caption", G.captions.includes("caption ok") && G.singlePhotos.length === 1);
+T("Y6c caption: no separate text message for that post", !G.sent.some((m) => m.text.includes("caption ok")));
+T("Y6c caption: post marked sent and batch sent", q1("SELECT sent_at_utc AS s FROM posts WHERE text = 'caption ok'").s !== null && batchState(YC) === "sent");
 
 // Y5 (F5): سکوت وسط دسته؛ واحد بعدی نمی‌رسه، باقی‌مانده برای ادامه حفظ می‌شه
 raw.exec("UPDATE posts SET sent_at_utc = 1 WHERE sent_at_utc IS NULL");
