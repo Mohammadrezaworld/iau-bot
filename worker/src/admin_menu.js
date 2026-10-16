@@ -5,6 +5,7 @@ import { tg } from "./telegram.js";
 export const ADMIN_MENU = [
   { label: "وضعیت ربات", cmd: "/status" },
   { label: "وضعیت ارسال", cmd: "/scrape_status" },
+  { label: "تنظیمات ارسال", cmd: "/scrape_settings", owner: true },
   { label: "توقف ارسال", cmd: "/scrape_pause", owner: true },
   { label: "ادامه ارسال", cmd: "/scrape_resume", owner: true },
   { label: "بررسی‌ها", cmd: "/review", owner: true },
