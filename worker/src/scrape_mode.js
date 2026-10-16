@@ -119,6 +119,7 @@ function panelMarkup(mode, env) {
       [b(`${mode === "manual" ? "✓ " : ""}تأیید دستی`, "ss:manual")],
       autoBtn,
       [b(`${mode === "stop" ? "✓ " : ""}توقف انتشار`, "ss:stop")],
+      [b("🔄 بروزرسانی", "ss:r")],
     ],
   };
 }
@@ -144,8 +145,13 @@ export async function handleScrapeSettingsCallback(env, cq, ctx) {
   if (["m", "manual", "stop"].includes(action)) await clearAutoToken(env);
   if (action === "locked" || (action === "auto" && !autoAllowed(env))) return ack(LOCKED_TEXT);
 
+  if (action === "r") {
+    // بروزرسانی پنل: همان پیام با وضعیت تازه ویرایش می‌شود (توکن تأیید خودکار دست‌نخورده می‌ماند)
+    await tg(env, "editMessageText", { chat_id: chatId, message_id: cq.message.message_id, text: await panelText(env), reply_markup: panelMarkup(mode, env), disable_web_page_preview: true });
+    return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+  }
   if (action === "m") {
-    return tg(env, "sendMessage", { chat_id: chatId, text: await panelText(env), reply_markup: panelMarkup(await scrapeMode(env), env), disable_web_page_preview: true });
+    return tg(env, "sendMessage",{ chat_id: chatId, text: await panelText(env), reply_markup: panelMarkup(await scrapeMode(env), env), disable_web_page_preview: true });
   }
   if (action === "manual" || action === "stop") {
     if (mode === "stop" && action === "manual") {
