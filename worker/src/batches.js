@@ -478,6 +478,21 @@ export async function handleBatchCallback(env, cq, ctx) {
     await tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: "نتیجه نامشخص؛ در /review دیده می‌شه", show_alert: true }).catch(() => {});
     throw err;
   }
+  // تأیید یا رد: نتیجه زیر همان پیش‌نمایش نوشته می‌شه و دکمه‌ها برداشته می‌شن (بدون پنجره‌ی هشدار)
+  if (action === "s" || action === "r") {
+    await showBatchResult(env, cq.message, text);
+    return tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: String(text).slice(0, 190) });
+  }
   return tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: String(text).slice(0, 190), show_alert: true });
+}
+
+async function showBatchResult(env, msg, text) {
+  if (!msg || !msg.text || msg.text.length > 3500) return;
+  await tg(env, "editMessageText", {
+    chat_id: msg.chat.id,
+    message_id: msg.message_id,
+    text: `${msg.text}\n\nنتیجه: ${String(text).slice(0, 300)}`,
+    entities: msg.entities,
+  }).catch(() => {});
 }
 

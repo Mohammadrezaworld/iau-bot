@@ -40,11 +40,12 @@ db.prepare = (sql) => { const st = origPrepare(sql); const b = st.bind; st.bind 
 const ok = (result) => Response.json({ ok: true, result });
 let mid = 1000;
 const G = { sent: [], photos: [], singlePhotos: [], fail: null, quietAfterOne: false, failAt: null, dropToken: null, photoFail: null }; // fail: 'network' | 'refuse' (یک‌بار، برای پیام گروه)
-const owner = []; const answers = [];
+const owner = []; const answers = []; const edits = []; const alerts = [];
 globalThis.fetch = async (u, o) => {
   const method = String(u).split("/").pop();
   const b = o && o.body ? JSON.parse(o.body) : {};
-  if (method === "answerCallbackQuery") { answers.push(b.text || ""); return ok(true); }
+  if (method === "answerCallbackQuery") { answers.push(b.text || ""); if (b.show_alert) alerts.push(b.text || ""); return ok(true); }
+  if (method === "editMessageText") { edits.push(b); return ok(true); }
   if (method === "getChatMember") return ok({ status: "member" });
   if (String(b.chat_id) === "-1001") {
     // مثل تلگرام: آلبوم فقط ۲ تا ۱۰ عکس؛ تک‌عکس با sendPhoto
@@ -163,6 +164,14 @@ reset(); await hook(cbOwner(`sb:r:${I1}`));
 T("I reject: batch rejected, posts marked sent, nothing sent to group", batchState(I1) === "rejected" && G.sent.length === 0 && q1("SELECT sent_at_utc AS s FROM posts WHERE text = 'پست رد'").s !== null);
 r = await prepareBatch(env);
 T("I rejected posts are not re-offered", r.prepared === 0);
+
+// I2) نتیجه‌ی رد زیر پیش‌نمایش نوشته می‌شه و دکمه‌ها برداشته می‌شن (بدون پنجره‌ی هشدار)
+addPost("telegram:test_channel_a", "پست نتیجه");
+await prepareBatch(env); const I2 = batchOf("پست نتیجه");
+reset(); edits.length = 0; alerts.length = 0;
+await hook({ update_id: ++uid, callback_query: { id: "cb" + uid, from: { id: 5 }, data: `sb:r:${I2}`, message: { message_id: 77, chat: { id: 5, type: "private" }, text: "پیش‌نمایش تست" } } });
+T("I2 reject edits preview with result and no keyboard", edits.length === 1 && edits[0].message_id === 77 && edits[0].text.startsWith("پیش‌نمایش تست") && edits[0].text.includes("نتیجه:") && !edits[0].reply_markup);
+T("I2 reject answers callback without alert", answers.length === 1 && alerts.length === 0);
 
 // J) انقضا: دسته‌ی بی‌جواب آزاد می‌شه و دوباره پیشنهاد می‌شه؛ تأیید دیرهنگام رد می‌شه
 addPost("telegram:test_channel_a", "پست انقضا");
