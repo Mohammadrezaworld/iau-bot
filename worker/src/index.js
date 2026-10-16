@@ -8,13 +8,16 @@ import { handleCallback } from "./wizard.js";
 import { handleKeywordCallback } from "./keywords.js";
 import { handleHolidayCallback } from "./holidays.js";
 import { handleJozvePost, handleJozveCommand, handleJozveCallback, handleJozveRemoveCallback, handleDmCallback, groupMovedGuide, dmIsMember, DM_NOT_MEMBER } from "./jozve.js";
-import { flushPosts, cleanPostText, inTehranQuietHours } from "./channels.js";
+import { cleanPostText, inTehranQuietHours, handleStatusRefresh } from "./channels.js";
+import { prepareBatch, handleBatchCallback, expireBatches, listStalledBatches, approveBatch } from "./batches.js";
+import { scrapeSettingsCommand, handleScrapeSettingsCallback } from "./scrape_mode.js";
+import { ADMIN_MENU } from "./admin_menu.js";
 import { isAdmin, isOwner } from "./admin.js";
 import { buildBackup } from "./admin.js";
 import { sendJsonDocument, tg } from "./telegram.js";
 import { handleMetroCallback, handleMetroUploadCallback, cleanupMetroMessages } from "./metro.js";
 import { handleScrapeReport, recordEvent, reportError, checkScrapeHealth, sendDailySummary, redact } from "./monitor.js";
-import { claimUpdate, markOutcome, markDoneWithRetry, notifyNeedsReview, retryUpdate, resolveUpdate, listReview, describeReviewRow, MAX_AUTO_ATTEMPTS } from "./updates.js";
+import { claimUpdate, markOutcome, markDoneWithRetry, notifyNeedsReview, retryUpdate, resolveUpdate, listReview, describeReviewRow, MAX_AUTO_ATTEMPTS, isUpdateId } from "./updates.js";
 
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
@@ -81,6 +84,11 @@ async function handleIngest(request, env) {
       .run();
     if (res.meta && res.meta.changes > 0) {
       newCount += 1;
+      if (markSent) {
+        const why = firstRun ? "baseline" : dryRun ? "dry_run" : category === "old" ? "old" : "undated";
+        await env.DB.prepare("INSERT OR IGNORE INTO post_outcomes (post_id, outcome, at_utc) SELECT id, ?, ? FROM posts WHERE source = ? AND channel = ? AND post_id = ?")
+          .bind(why, ts, source, channel, String(p.post_id)).run();
+      }
       if (category === "send") {
         sendCount += 1;
         if (report.send.length < 5) report.send.push(String(p.text || "").slice(0, 120));
@@ -100,10 +108,13 @@ async function handleIngest(request, env) {
   const held = source === "bale" && !firstRun && !dryRun && sendCount > FLOOD_LIMIT;
   if (held) {
     await env.DB.prepare(
+      "INSERT OR IGNORE INTO post_outcomes (post_id, outcome, at_utc) SELECT id, 'held_flood', ? FROM posts WHERE source = ? AND channel = ? AND sent_at_utc IS NULL AND first_seen_utc = ?"
+    ).bind(ts, source, channel, ts).run();
+    await env.DB.prepare(
       "UPDATE posts SET sent_at_utc = ? WHERE source = ? AND channel = ? AND sent_at_utc IS NULL AND first_seen_utc = ?"
     ).bind(ts, source, channel, ts).run();
     await recordEvent(env, source, channel, "error", `flood: ${sendCount} پست جدید ثبت شد ولی به گروه نرفت`);
-    await notifyOwner(env, `پست‌های جدید بله (${channel}): ${sendCount} پست یک‌جا رسید. برای امنیت به گروه نرفت. اگه باید فرستاده بشه، بگو تا دستی بفرستم.`);
+    await notifyOwner(env, `پست‌های جدید بله (${channel}): ${sendCount} پست یک‌جا رسید. برای امنیت به گروه نرفت و کنار گذاشته شدن. در این نسخه مسیر ارسال مجدد ندارن؛ وضعیتشون در /scrape_status ثبت شده.`);
   }
 
   // گزارش حالت آزمایشی: هر بار که پست جدیدی باشه، برای مالک خلاصه‌ی تصمیم‌ها
@@ -120,8 +131,8 @@ async function handleIngest(request, env) {
   let delivered = null;
   if (!firstRun && !dryRun && !held && sendCount > 0) {
     try {
-      delivered = await flushPosts(env, source, channel);
-      if (delivered && delivered.sent) await recordEvent(env, source, channel, "delivered", String(delivered.sent));
+      delivered = await prepareBatch(env);
+      if (delivered && delivered.prepared) await recordEvent(env, source, channel, "delivered", `batch:${delivered.prepared}`);
     } catch (err) {
       await reportError(env, source, channel, "flush", err && err.message ? err.message : "unknown");
     }
@@ -180,9 +191,29 @@ async function handleGroupMessage(env, msg) {
 
 // پردازش یک update: هر خطایی بیرون پرت می‌شه تا handleTelegramWebhook تصمیم بگیره
 async function dispatchUpdate(env, update, ctx = null) {
+  // ارسال خودکار دسته: همان مسیر ایمن ادامه (claim/lease و خطاهای مبهم)
+  if (update && update.kind === "auto_batch") {
+    if (!ctx) return "این دسته را از /review با «ادامه» بزن.";
+    // هر اجرای خودکار (حتی تلاش مجدد از /review) فقط با مجوز همان فعال‌سازی ادامه می‌دهد
+    return approveBatch(env, { ...ctx, auto: true, epoch: Number(update.epoch) }, Number(update.batch));
+  }
   if (update && update.callback_query) {
     const cq = update.callback_query;
     const data = cq.data || "";
+    if (data.startsWith("sb:")) {
+      // دسته‌ی اسکرپ: فقط مالک در پیوی
+      if (cq.message && cq.message.chat && cq.message.chat.type === "private" && (await isOwner(env, cq.from.id))) {
+        return handleBatchCallback(env, cq, ctx);
+      }
+      return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+    }
+    if (data.startsWith("ss:")) {
+      // پنل حالت اسکرپ: فقط مالک در پیوی؛ کنترل نهایی در handler
+      if (cq.message && cq.message.chat && cq.message.chat.type === "private" && (await isOwner(env, cq.from.id))) {
+        return handleScrapeSettingsCallback(env, cq, ctx);
+      }
+      return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+    }
     if (data.startsWith("rv:")) {
       // فهرست بررسی: فقط مالک
       if (cq.message && cq.message.chat && cq.message.chat.type === "private" && (await isOwner(env, cq.from.id))) {
@@ -209,6 +240,16 @@ async function dispatchUpdate(env, update, ctx = null) {
       await tryDeleteMessage(env, cq.message.chat.id, cq.message.message_id);
       await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
     } else if (cq.message.chat.type === "private" && (await isAdmin(env, cq.from.id))) {
+      if (data === "st:r") return handleStatusRefresh(env, cq);
+      if (data.startsWith("am:")) {
+        // دکمه‌ی منوی ادمین: همان دستور متنی از مسیر عادی پیام اجرا می‌شه (مجوز مالک و ادمین همون‌جا چک می‌شه)
+        const item = ADMIN_MENU[Number(data.slice(3))];
+        if (item) {
+          const nowMs = Date.now();
+          await dispatchUpdate(env, { message: { message_id: -nowMs, date: Math.floor(nowMs / 1000), chat: cq.message.chat, from: cq.from, text: item.cmd } });
+        }
+        return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+      }
       if (data.startsWith("mu:")) await handleMetroUploadCallback(env, cq);
       else if (data.startsWith("kw:")) await handleKeywordCallback(env, cq);
       else if (data.startsWith("hol:")) await handleHolidayCallback(env, cq);
@@ -225,7 +266,7 @@ async function dispatchUpdate(env, update, ctx = null) {
   const msg = update && update.message;
   if (msg && msg.chat) {
     if (msg.chat.type === "private") {
-      if (msg.from && (await isOwner(env, msg.from.id)) && ["/review", "/retry_update", "/resolve_update"].includes(parseCmd(msg.text).cmd)) {
+      if (msg.from && (await isOwner(env, msg.from.id)) && ["/review", "/retry_update", "/resolve_update", "/scrape_settings"].includes(parseCmd(msg.text).cmd)) {
         return handleOwnerCommand(env, msg);
       }
       // کاربر عادی: فقط /start و /jozve؛ بقیه‌ی پیام‌ها بی‌صدا نادیده گرفته می‌شن
@@ -311,24 +352,38 @@ async function handleOwnerCommand(env, msg) {
   const chatId = msg.chat.id;
   if (cmd === "/review") {
     const rows = await listReview(env);
-    if (!rows.length) return tg(env, "sendMessage", { chat_id: chatId, text: "موردی نیازمند بررسی نیست." });
-    const text = ["موارد نیازمند بررسی:", "", ...rows.map(describeReviewRow)].join("\n\n");
-    const inline_keyboard = rows.map((r) => [
-      { text: "تلاش مجدد", callback_data: `rv:r:${r.update_id}` },
-      { text: "اعمال شد", callback_data: `rv:a:${r.update_id}` },
-      { text: "انجام نشد", callback_data: `rv:n:${r.update_id}` },
-    ]);
-    return tg(env, "sendMessage", { chat_id: chatId, text, reply_markup: { inline_keyboard }, disable_web_page_preview: true });
+    const stalled = await listStalledBatches(env);
+    if (!rows.length && !stalled.length) return tg(env, "sendMessage", { chat_id: chatId, text: "موردی نیازمند بررسی نیست." });
+    const parts = [];
+    const inline_keyboard = [];
+    if (rows.length) {
+      parts.push(["موارد نیازمند بررسی:", "", ...rows.map(describeReviewRow)].join("\n\n"));
+      for (const r of rows) inline_keyboard.push([
+        { text: "تلاش مجدد", callback_data: `rv:r:${r.update_id}` },
+        { text: "اعمال شد", callback_data: `rv:a:${r.update_id}` },
+        { text: "انجام نشد", callback_data: `rv:n:${r.update_id}` },
+      ]);
+    }
+    // دسته‌ی ناقص: مستقل از پیش‌نمایش قدیمی؛ ادامه فقط با دکمه‌ی مالک و فقط برای بخش‌های نرفته
+    for (const b of stalled) {
+      parts.push(`دسته‌ی ${b.id} ناقص مانده: ${b.left_n} پست و ${b.photo_n} بخش عکس نرفته${b.amb_n ? ` (${b.amb_n} مورد مبهم؛ اول در فهرست بالا تعیین کن)` : ""}.`);
+      inline_keyboard.push([{ text: `ادامه‌ی دسته ${b.id}`, callback_data: `sb:c:${b.id}` }]);
+      if (b.photo_n) inline_keyboard.push([{ text: `ادامه بدون عکس‌های دسته ${b.id}`, callback_data: `sb:k:${b.id}` }]);
+    }
+    return tg(env, "sendMessage", { chat_id: chatId, text: parts.join("\n\n"), reply_markup: { inline_keyboard }, disable_web_page_preview: true });
+  }
+  if (cmd === "/scrape_settings") {
+    return scrapeSettingsCommand(env, chatId);
   }
   if (cmd === "/retry_update") {
     const id = Number(arg.trim());
-    const text = Number.isSafeInteger(id) && id > 0 ? await retryUpdate(env, id, dispatchUpdate) : "فرمت: /retry_update <شناسه>";
+    const text = isUpdateId(id) ? await retryUpdate(env, id, dispatchUpdate) : "فرمت: /retry_update <شناسه>";
     return tg(env, "sendMessage", { chat_id: chatId, text });
   }
   if (cmd === "/resolve_update") {
     const [rawId, decision] = arg.trim().split(/\s+/);
     const id = Number(rawId);
-    if (!Number.isSafeInteger(id) || id <= 0 || !["applied", "not_applied"].includes(decision)) {
+    if (!isUpdateId(id) || !["applied", "not_applied"].includes(decision)) {
       return tg(env, "sendMessage", { chat_id: chatId, text: "فرمت: /resolve_update <شناسه> applied|not_applied\napplied: اثر انجام شده · not_applied: اثری نبوده (بعدش می‌شه دوباره اجرا کرد)" });
     }
     return tg(env, "sendMessage", { chat_id: chatId, text: await resolveUpdate(env, id, decision) });
@@ -341,7 +396,7 @@ async function handleReviewCallback(env, cq) {
   const [, action, rawId] = String(cq.data).split(":");
   const id = Number(rawId);
   let text;
-  if (!Number.isSafeInteger(id) || id <= 0) text = "نامعتبر";
+  if (!isUpdateId(id)) text = "نامعتبر";
   else if (action === "r") text = await retryUpdate(env, id, dispatchUpdate);
   else if (action === "a") text = await resolveUpdate(env, id, "applied");
   else if (action === "n") text = await resolveUpdate(env, id, "not_applied");
@@ -376,7 +431,7 @@ export default {
           if (event.cron === "* * * * *") {
             // هر دقیقه: پاک‌کردن پیام‌های موقت /metro، بررسی سلامت اسکرپ‌ها و گزارش روزانه.
             // هرکدوم جدا اجرا می‌شه تا خطای یکی، بقیه رو نبره.
-            const tasks = { metro: cleanupMetroMessages, health: checkScrapeHealth, summary: sendDailySummary };
+            const tasks = { metro: cleanupMetroMessages, health: checkScrapeHealth, summary: sendDailySummary, batches: expireBatches };
             const names = Object.keys(tasks);
             const results = await Promise.allSettled(names.map((name) => tasks[name](env)));
             results.forEach((r, i) => {
@@ -386,8 +441,8 @@ export default {
             });
           } else if (event.cron === "30 2 * * *") {
             // ۰۶:۰۰ تهران: پست‌های دوره‌ی خواب یک‌جا
-            const r = await flushPosts(env);
-            if (r && r.sent) await recordEvent(env, "system", "", "delivered", String(r.sent));
+            const r = await prepareBatch(env);
+            if (r && r.prepared) await recordEvent(env, "system", "", "delivered", `batch:${r.prepared}`);
           } else if (event.cron === "30 20 * * *") {
             const backup = await buildBackup(env);
             await sendJsonDocument(env, env.OWNER_ID, "iaut-backup.json", backup, "پشتیبان روزانه");

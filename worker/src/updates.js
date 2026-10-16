@@ -151,6 +151,9 @@ async function effectsFor(env, row) {
   return results;
 }
 
+// شناسه‌ی update: تلگرام مثبت می‌دهد؛ ارسال خودکار شناسه‌ی منفی و غیرصفر دارد. هر دو باید در صف ثبت باشند (بررسی وجود در retry/resolve).
+export const isUpdateId = (id) => Number.isSafeInteger(id) && id !== 0;
+
 export function describeReviewRow(r) {
   const state = r.state === "processing" ? "پردازش مانده (نتیجه نامشخص)" : r.state === "failed" ? "شکست خورده" : "نیازمند بررسی";
   const parts = [`#${r.update_id} · ${state}`];
@@ -185,8 +188,10 @@ export async function retryUpdate(env, id, dispatch) {
   ).bind(lease, nowS(), id, row.state, row.attempts, id).run();
   if (upd.meta.changes !== 1) return "این درخواست هم‌زمان تغییر کرده؛ دوباره /review را ببین.";
 
+  let out;
+  const payload = JSON.parse(row.payload);
   try {
-    await dispatch(env, JSON.parse(row.payload), { updateId: id, lease });
+    out = await dispatch(env, payload, { updateId: id, lease });
   } catch (err) {
     if (err instanceof LeaseLostError) return "اجرای دیگری این درخواست را گرفته؛ چیزی تغییر نکرد.";
     const amb = err instanceof AmbiguousError;
@@ -195,6 +200,8 @@ export async function retryUpdate(env, id, dispatch) {
     return amb ? "اثری نامشخص ماند؛ قبل از تلاش دوباره /resolve_update را بزن." : "تلاش مجدد هم شکست خورد؛ در فهرست باقی موند.";
   }
   if (!(await markDoneWithRetry(env, id, lease))) return "کار انجام شد، ولی ثبت پایان نشد؛ در /review دیده می‌شه.";
+  // دسته‌ی خودکار: متن واقعی نتیجه (مثلاً «حالت تغییر کرد؛ باقی‌مانده نگه داشته شد») به مالک نشان داده شود
+  if (payload && payload.kind === "auto_batch" && typeof out === "string" && out) return out;
   return "تلاش مجدد انجام شد.";
 }
 
@@ -207,6 +214,13 @@ export async function resolveUpdate(env, id, decision) {
   if (decision === "applied") {
     await env.DB.prepare("UPDATE effects SET state = 'done', last_error = 'owner_applied' WHERE update_id = ? AND state = 'intent'").bind(id).run();
     await env.DB.prepare("UPDATE update_queue SET state = 'done', reason = 'owner_applied', payload = NULL, lease = '' WHERE update_id = ?").bind(id).run();
+    // بخش‌های دسته‌ی اسکرپ که مالک «اعمال شد» گفته، پست‌هاشون ارسال‌شده علامت می‌خوره
+    await env.DB.prepare(
+      "INSERT OR IGNORE INTO post_outcomes (post_id, outcome, at_utc) SELECT bi.post_id, 'owner_applied', ? FROM scrape_batch_items bi JOIN effects e ON e.op_key = bi.unit JOIN posts p ON p.id = bi.post_id WHERE e.update_id = ? AND p.sent_at_utc IS NULL"
+    ).bind(nowS(), id).run();
+    await env.DB.prepare(
+      "UPDATE posts SET sent_at_utc = ? WHERE sent_at_utc IS NULL AND id IN (SELECT bi.post_id FROM scrape_batch_items bi JOIN effects e ON e.op_key = bi.unit WHERE e.update_id = ?)"
+    ).bind(nowS(), id).run();
     return "ثبت شد: اثر انجام شده و درخواست بسته شد.";
   }
   await env.DB.prepare("UPDATE effects SET state = 'failed', last_error = 'owner_not_applied' WHERE update_id = ? AND state = 'intent'").bind(id).run();
