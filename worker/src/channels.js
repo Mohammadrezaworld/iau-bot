@@ -91,10 +91,22 @@ async function unsentCount(env) {
 }
 
 // /scrape_pause · /scrape_resume [skip] · /scrape_status (فقط مالک؛ status برای همه‌ی ادمین‌ها)
+async function scrapeStatusText(env) {
+  const paused = await scrapePaused(env);
+  return `ارسال به گروه: ${paused ? "متوقف" : "فعال"}\n${await statusReport(env)}`;
+}
+const STATUS_MARKUP = { inline_keyboard: [[{ text: "🔄 بروزرسانی", callback_data: "st:r" }]] };
+
+// دکمه‌ی «بروزرسانی» زیر وضعیت ارسال: همان پیام را با وضعیت تازه ویرایش می‌کند (فقط ادمین، از index.js)
+export async function handleStatusRefresh(env, cq) {
+  const m = cq.message;
+  await tg(env, "editMessageText", { chat_id: m.chat.id, message_id: m.message_id, text: await scrapeStatusText(env), reply_markup: STATUS_MARKUP });
+  return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+}
+
 export async function scrapeCommand(env, chatId, userId, cmd, arg, owner) {
   if (cmd === "/scrape_status") {
-    const paused = await scrapePaused(env);
-    return sendMessage(env, chatId, `ارسال به گروه: ${paused ? "متوقف" : "فعال"}\n${await statusReport(env)}`);
+    return tg(env, "sendMessage", { chat_id: chatId, text: await scrapeStatusText(env), reply_markup: STATUS_MARKUP });
   }
   if (!owner) return sendMessage(env, chatId, "این دستور فقط برای مالک ربات است.");
   if (cmd === "/scrape_pause") {

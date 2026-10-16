@@ -8,7 +8,7 @@ import { handleCallback } from "./wizard.js";
 import { handleKeywordCallback } from "./keywords.js";
 import { handleHolidayCallback } from "./holidays.js";
 import { handleJozvePost, handleJozveCommand, handleJozveCallback, handleJozveRemoveCallback, handleDmCallback, groupMovedGuide, dmIsMember, DM_NOT_MEMBER } from "./jozve.js";
-import { cleanPostText, inTehranQuietHours } from "./channels.js";
+import { cleanPostText, inTehranQuietHours, handleStatusRefresh } from "./channels.js";
 import { prepareBatch, handleBatchCallback, expireBatches, listStalledBatches, approveBatch } from "./batches.js";
 import { scrapeSettingsCommand, handleScrapeSettingsCallback } from "./scrape_mode.js";
 import { ADMIN_MENU } from "./admin_menu.js";
@@ -240,6 +240,7 @@ async function dispatchUpdate(env, update, ctx = null) {
       await tryDeleteMessage(env, cq.message.chat.id, cq.message.message_id);
       await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
     } else if (cq.message.chat.type === "private" && (await isAdmin(env, cq.from.id))) {
+      if (data === "st:r") return handleStatusRefresh(env, cq);
       if (data.startsWith("am:")) {
         // دکمه‌ی منوی ادمین: همان دستور متنی از مسیر عادی پیام اجرا می‌شه (مجوز مالک و ادمین همون‌جا چک می‌شه)
         const item = ADMIN_MENU[Number(data.slice(3))];
