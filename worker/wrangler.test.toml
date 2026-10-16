@@ -1,0 +1,30 @@
+# محیط تست جدا: ربات تست و گروه تست خصوصی. نه به کانال جزوه‌ها وصل است، نه زمان‌بندی دارد.
+# قبل از deploy: `wrangler d1 create iaut-db-test` و شناسه‌ی خروجی را جای REPLACE_WITH_TEST_D1_ID بگذارید.
+# توکن ربات تست و شناسه‌ی گروه تست را فقط با wrangler secret روی این Worker تنظیم کنید؛ در این فایل نگذارید.
+# SCRAPE_AUTO_ALLOWED عمداً تنظیم نشده است.
+name = "iaut-bot-test"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+account_id = "REDACTED_ACCOUNT_ID"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "iaut-db-test"
+database_id = "REPLACE_WITH_TEST_D1_ID"
+
+[vars]
+OWNER_ID = "REDACTED_OWNER_ID"
+JOZVE_CHANNEL = ""
+JOZVE_PUBLIC_USERNAME = ""
+GROUP_JOIN_LINK = ""
+
+[triggers]
+crons = []
+
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+invocation_logs = true
+persist = true
