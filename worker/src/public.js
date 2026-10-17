@@ -9,12 +9,16 @@ const nowUtc = () => Math.floor(Date.now() / 1000);
 
 // پرسش آزاد زوج/فرد: فقط اگه همه‌ی کلمه‌ها از مجموعه‌ی مجاز باشن و هر دو «زوج» و «فرد» باشن.
 // مثال‌ها: «زوج یا فرد؟»، «این هفته فرد هست یا زوج؟»، «این هفته زوج هست یا فرد»
-const PARITY_WORDS = new Set(["این", "هفته", "زوج", "فرد", "یا", "هست"]);
+// شکل‌های محاوره‌ای («زوجه»، «فرده») به زوج و فرد برمی‌گردن. پرسش باید «؟» یا «یا» داشته باشه؛ جمله‌ی خبری («این هفته فرد هست») جواب نمی‌گیره.
+const PARITY_WORDS = new Set(["این", "هفته", "زوج", "فرد", "زوجه", "فرده", "یا", "هست"]);
 export function isParityQuestion(text) {
-  const words = String(text || "").replace(/\u200c/g, " ").replace(/[؟?!.،,]/g, " ").trim().split(/\s+/).filter(Boolean);
+  const raw = String(text || "");
+  if (!/[؟?]/.test(raw) && !/(^|\s)یا(\s|$)/.test(raw.replace(/\u200c/g, " "))) return false;
+  const words = raw.replace(/\u200c/g, " ").replace(/[؟?!.،,]/g, " ").trim().split(/\s+/).filter(Boolean);
   if (!words.length || words.length > 6) return false;
   if (!words.every((w) => PARITY_WORDS.has(w))) return false;
-  return words.includes("زوج") && words.includes("فرد");
+  const norm = words.map((w) => (w === "زوجه" ? "زوج" : w === "فرده" ? "فرد" : w));
+  return norm.includes("زوج") || norm.includes("فرد"); // «این هفته فرده؟» هم پرسشه
 }
 
 export async function getSetting(env, key, fallback = null) {
@@ -56,8 +60,9 @@ function buildAnswer(cmd, startIso, today) {
   return `هفته ${faNum(idx)} — ${parityOf(idx)}\n${rangeText(startIso, idx)}`;
 }
 
-async function sendFresh(env, chatId, text) {
-  const sent = await tg(env, "sendMessage", { chat_id: chatId, text, disable_web_page_preview: true });
+async function sendFresh(env, chatId, text, replyTo = null) {
+  const extra = replyTo ? { reply_to_message_id: replyTo, allow_sending_without_reply: true } : {};
+  const sent = await tg(env, "sendMessage", { chat_id: chatId, text, disable_web_page_preview: true, ...extra });
   return sent.message_id;
 }
 
@@ -95,9 +100,9 @@ async function shortHash(text) {
   return [...new Uint8Array(buf)].slice(0, 8).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-export async function answerPublic(env, chatId, cmd) {
+export async function answerPublic(env, chatId, cmd, replyTo = null) {
   const startIso = await getSetting(env, "semester_start", "2026-09-12");
   const today = tehranToday();
   const text = buildAnswer(cmd, startIso, today);
-  return sendCachedAnswer(env, chatId, `${cmd}|${today}`, text, () => sendFresh(env, chatId, text));
+  return sendCachedAnswer(env, chatId, `${cmd}|${today}`, text, () => sendFresh(env, chatId, text, replyTo));
 }

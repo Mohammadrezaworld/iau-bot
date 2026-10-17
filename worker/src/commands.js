@@ -31,7 +31,7 @@ const CONTENT_CMDS = new Set([
 
 export const PUBLIC_CMDS = ["/week", "/next", "/term", "/left", "/call", "/links", "/events", "/updates"];
 
-export async function runPublic(env, chatId, cmd) {
+export async function runPublic(env, chatId, cmd, replyTo = null) {
   if (["/call"].includes(cmd)) {
     const html = await publicContacts(env);
     return sendCachedAnswer(env, chatId, "/call", html, async () => (await sendHtml(env, chatId, html)).message_id);
@@ -43,7 +43,7 @@ export async function runPublic(env, chatId, cmd) {
   }
   if (["/events"].includes(cmd)) return sendMessage(env, chatId, await publicEvents(env));
   if (["/updates"].includes(cmd)) return sendMessage(env, chatId, await updatesText(env));
-  return answerPublic(env, chatId, cmd);
+  return answerPublic(env, chatId, cmd, replyTo);
 }
 
 const DM_WELCOME = [
