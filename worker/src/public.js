@@ -18,7 +18,10 @@ export function isParityQuestion(text) {
   if (!words.length || words.length > 6) return false;
   if (!words.every((w) => PARITY_WORDS.has(w))) return false;
   const norm = words.map((w) => (w === "زوجه" ? "زوج" : w === "فرده" ? "فرد" : w));
-  return norm.includes("زوج") && norm.includes("فرد");
+  // هر دو کلمه، یا «این هفته» + یک کلمه («این هفته فرده؟»). «زوج؟» تنها جواب نمی‌گیره.
+  const hasBoth = norm.includes("زوج") && norm.includes("فرد");
+  const thisWeekOne = words.includes("هفته") && (norm.includes("زوج") || norm.includes("فرد"));
+  return hasBoth || thisWeekOne;
 }
 
 export async function getSetting(env, key, fallback = null) {
