@@ -7,6 +7,16 @@ import {
 
 const nowUtc = () => Math.floor(Date.now() / 1000);
 
+// پرسش آزاد زوج/فرد: فقط اگه همه‌ی کلمه‌ها از مجموعه‌ی مجاز باشن و هر دو «زوج» و «فرد» باشن.
+// مثال‌ها: «زوج یا فرد؟»، «این هفته فرد هست یا زوج؟»، «این هفته زوج هست یا فرد»
+const PARITY_WORDS = new Set(["این", "هفته", "زوج", "فرد", "یا", "هست"]);
+export function isParityQuestion(text) {
+  const words = String(text || "").replace(/\u200c/g, " ").replace(/[؟?!.،,]/g, " ").trim().split(/\s+/).filter(Boolean);
+  if (!words.length || words.length > 6) return false;
+  if (!words.every((w) => PARITY_WORDS.has(w))) return false;
+  return words.includes("زوج") && words.includes("فرد");
+}
+
 export async function getSetting(env, key, fallback = null) {
   const row = await env.DB.prepare("SELECT value FROM settings WHERE key = ?").bind(key).first();
   return row ? row.value : fallback;

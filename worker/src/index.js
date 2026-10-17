@@ -1,7 +1,7 @@
 // Worker: webhook تلگرام، دریافت پست‌های اسکرپ‌شده (/ingest)، پشتیبان روزانه.
 import { webhookSecret, tryDeleteMessage } from "./telegram.js";
 import { handleAdminMessage, handleDmUser, parseCmd, PUBLIC_CMDS, runPublic } from "./commands.js";
-import { getSetting } from "./public.js";
+import { getSetting, isParityQuestion } from "./public.js";
 import { tehranToday } from "./calendar.js";
 import { sendReminders } from "./reminders.js";
 import { handleCallback } from "./wizard.js";
@@ -164,7 +164,8 @@ async function groupSilenced(env, update) {
 const GROUP_MOVED = ["/metro", "/call", "/links", "/events", "/next", "/term", "/left", "/updates"];
 // گروه: فقط دستورهای عمومی، با ضداسپم ۳۰ ثانیه‌ای برای هر کاربر (ادمین‌ها مستثنی)
 async function handleGroupMessage(env, msg) {
-  const { cmd } = parseCmd(msg.text);
+  // «زوج یا فرد؟» و مانندش همان پاسخ /week را می‌گیرد؛ بقیه‌ی پیام‌ها مثل قبل (فقط دستورها)
+  const cmd = isParityQuestion(msg.text) ? "/week" : parseCmd(msg.text).cmd;
   // دستورهای منتقل‌شده به پیوی: فقط راهنما (/updates بی‌صدا پاک می‌شه)
   if (GROUP_MOVED.includes(cmd) && msg.from) {
     if (cmd === "/updates") return tryDeleteMessage(env, msg.chat.id, msg.message_id);
