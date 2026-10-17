@@ -165,7 +165,8 @@ const GROUP_MOVED = ["/metro", "/call", "/links", "/events", "/next", "/term", "
 // گروه: فقط دستورهای عمومی، با ضداسپم ۳۰ ثانیه‌ای برای هر کاربر (ادمین‌ها مستثنی)
 async function handleGroupMessage(env, msg) {
   // «زوج یا فرد؟» و مانندش همان پاسخ /week را می‌گیرد؛ بقیه‌ی پیام‌ها مثل قبل (فقط دستورها)
-  const cmd = isParityQuestion(msg.text) ? "/week" : parseCmd(msg.text).cmd;
+  const isQuestion = isParityQuestion(msg.text); // پرسش آزاد: پیام کاربر پاک نمی‌شه
+  const cmd = isQuestion ? "/week" : parseCmd(msg.text).cmd;
   // دستورهای منتقل‌شده به پیوی: فقط راهنما (/updates بی‌صدا پاک می‌شه)
   if (GROUP_MOVED.includes(cmd) && msg.from) {
     if (cmd === "/updates") return tryDeleteMessage(env, msg.chat.id, msg.message_id);
@@ -179,7 +180,7 @@ async function handleGroupMessage(env, msg) {
     const nowS = Math.floor(Date.now() / 1000);
     const row = await env.DB.prepare("SELECT last_utc FROM user_cooldowns WHERE user_id = ?").bind(userId).first();
     if (row && nowS - row.last_utc < 30) {
-      await tryDeleteMessage(env, msg.chat.id, msg.message_id); // اسپم: بی‌صدا پاک می‌شه
+      if (!isQuestion) await tryDeleteMessage(env, msg.chat.id, msg.message_id); // اسپم: بی‌صدا پاک می‌شه
       return;
     }
     await env.DB.prepare(
@@ -187,7 +188,7 @@ async function handleGroupMessage(env, msg) {
     ).bind(userId, nowS).run();
   }
   await runPublic(env, msg.chat.id, cmd);
-  await tryDeleteMessage(env, msg.chat.id, msg.message_id);
+  if (!isQuestion) await tryDeleteMessage(env, msg.chat.id, msg.message_id);
 }
 
 // پردازش یک update: هر خطایی بیرون پرت می‌شه تا handleTelegramWebhook تصمیم بگیره
