@@ -24,10 +24,10 @@ let fails = 0; const ok = (n, c) => { console.log((c ? "PASS " : "FAIL ") + n); 
 const g = (uid, text, id) => hook({ message: { message_id: id, chat: { id: -100555, type: "supergroup" }, from: { id: uid }, text } });
 
 // ۱. عبارت‌های فهرست‌شده و تنوع‌هاشون
-const yes = ["زوج یا فرد؟", "زوج یا فرد ؟", "این هفته زوج یا فرد؟", "این هفته فرد یا زوج؟", "این هفته فرد هست یا زوج؟", "این هفته زوج هست یا فرد؟", "این‌هفته زوج یا فرد؟"];
-ok("listed phrases are recognised", yes.every((t) => isParityQuestion(t)));
-const no = ["سلام", "کلاس امروز داریم؟", "زوج خوبه", "این هفته کلاس داریم یا نه؟", "زوج", "فرد", "این هفته زوج یا فرد هست یا نه بگو", ""];
-ok("unrelated messages are not recognised", no.every((t) => !isParityQuestion(t)));
+const yes = ["زوج یا فرد؟", "زوج یا فرد ؟", "این هفته زوج یا فرد؟", "این هفته فرد یا زوج؟", "این هفته فرد هست یا زوج؟", "این هفته زوج هست یا فرد؟", "این‌هفته زوج یا فرد؟", "این هفته زوجه یا فرده؟", "زوجه یا فرده ؟", "این هفته فرده؟", "زوج؟"];
+ok("listed phrases and colloquial forms are recognised", yes.every((t) => isParityQuestion(t)));
+const no = ["سلام", "کلاس امروز داریم؟", "زوج خوبه", "این هفته کلاس داریم یا نه؟", "این هفته فرد هست", "این هفته زوج هست", "این هفته زوج یا فرد هست یا نه بگو", "کلاس زوج‌ها ساعت ده است", ""];
+ok("unrelated and statements are not recognised", no.every((t) => !isParityQuestion(t)));
 
 // ۲. پاسخ در گروه: همان شماره و زوج/فرد /week، و پیام پرسش پاک می‌شه
 const startIso = "2026-09-12";
@@ -37,6 +37,7 @@ sent.length = 0; await g(101, "این هفته فرد هست یا زوج؟", 500
 const ans = sent.find((x) => x.m === "sendMessage" && /هفته/.test(x.text || ""));
 ok("group question gets the /week answer", !!ans && ans.text.includes(parityOf(idx)) && ans.text.includes(`هفته`));
 ok("question message is kept (not deleted)", !sent.some((x) => x.m === "deleteMessage" && x.message_id === 5001));
+ok("answer is a reply to the question", !!ans && ans.reply_to_message_id === 5001);
 
 // ۳. پیام معمولی گروه بی‌جواب می‌مونه
 sent.length = 0; await g(102, "سلام بچه‌ها", 5002);

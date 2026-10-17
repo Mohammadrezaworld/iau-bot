@@ -187,7 +187,8 @@ async function handleGroupMessage(env, msg) {
       "INSERT INTO user_cooldowns (user_id, last_utc) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_utc = excluded.last_utc"
     ).bind(userId, nowS).run();
   }
-  await runPublic(env, msg.chat.id, cmd);
+  // پرسش آزاد: جواب زیر خود پرسش (ریپلای) می‌آید تا معلوم باشه جواب مال کدوم پیامه
+  await runPublic(env, msg.chat.id, cmd, isQuestion ? msg.message_id : null);
   if (!isQuestion) await tryDeleteMessage(env, msg.chat.id, msg.message_id);
 }
 
