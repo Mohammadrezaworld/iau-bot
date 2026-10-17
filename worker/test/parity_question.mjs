@@ -1,4 +1,4 @@
-// پرسش آزاد «زوج یا فرد؟» در گروه: همان پاسخ /week، و پیام پرسش پاک می‌شه
+// پرسش آزاد «زوج یا فرد؟» در گروه: همان پاسخ /week؛ پیام پرسش کاربر پاک نمی‌شه
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "fs";
 import { fileURLToPath as __ftp } from "node:url";
@@ -36,7 +36,7 @@ const idx = weekIndex(startIso, today);
 sent.length = 0; await g(101, "این هفته فرد هست یا زوج؟", 5001);
 const ans = sent.find((x) => x.m === "sendMessage" && /هفته/.test(x.text || ""));
 ok("group question gets the /week answer", !!ans && ans.text.includes(parityOf(idx)) && ans.text.includes(`هفته`));
-ok("question message is deleted", sent.some((x) => x.m === "deleteMessage" && x.message_id === 5001));
+ok("question message is kept (not deleted)", !sent.some((x) => x.m === "deleteMessage" && x.message_id === 5001));
 
 // ۳. پیام معمولی گروه بی‌جواب می‌مونه
 sent.length = 0; await g(102, "سلام بچه‌ها", 5002);
