@@ -17,6 +17,7 @@ const SUITES = [
   "group_moved.mjs", // پیام انتقال گروه
   "group_guidance.mjs", // راهنمای گروه
   "quiet_all.mjs", // ساعت سکوت: گروه ساکت، پیوی فعال
+  "backup_coverage.mjs", // پشتیبان: همه‌ی جدول‌های ماندگار schema پوشش داده شده‌اند
 ];
 
 let failed = 0;
