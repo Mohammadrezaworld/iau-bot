@@ -18,7 +18,7 @@ export function isParityQuestion(text) {
   if (!words.length || words.length > 6) return false;
   if (!words.every((w) => PARITY_WORDS.has(w))) return false;
   const norm = words.map((w) => (w === "زوجه" ? "زوج" : w === "فرده" ? "فرد" : w));
-  return norm.includes("زوج") || norm.includes("فرد"); // «این هفته فرده؟» هم پرسشه
+  return norm.includes("زوج") && norm.includes("فرد");
 }
 
 export async function getSetting(env, key, fallback = null) {
