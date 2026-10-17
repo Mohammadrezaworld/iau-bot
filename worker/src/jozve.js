@@ -693,7 +693,9 @@ async function dmFilesView(env, kind, course, prof) {
   if (!username) return { text: "لینک کانال تنظیم نشده؛ به ادمین اطلاع بده.", markup: grid([], [back, { text: "بستن", callback_data: "d:x" }]) };
   if (!results.length) return { text: "موردی پیدا نشد.", markup: grid([], [back, { text: "بستن", callback_data: "d:x" }]) };
   const rows = results.map((r, i) => {
-    const label = Array.from(r.title || r.file_name || `فایل ${i + 1}`).slice(0, 60).join("");
+    // برچسب یکتا: اگه عنوان (مثلاً ترم) هست، شماره کنارش؛ فایل بی‌عنوان با نام فایل یا «عکس N»
+    const base = r.title ? `${r.title} ${i + 1}` : r.file_name || `عکس ${i + 1}`;
+    const label = Array.from(base).slice(0, 60).join("");
     return [{ text: label, url: `https://t.me/${username}/${r.channel_msg_id}` }];
   });
   return {
