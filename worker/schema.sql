@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS posts (
   sent_at_utc  INTEGER,                  -- NULL یعنی هنوز به گروه نرفته
   UNIQUE (source, channel, post_id)
 );
+CREATE INDEX IF NOT EXISTS posts_sent_at ON posts (sent_at_utc);
 
 -- سوابق اجرای اسکرپ (برای /updates و هشدار خطا)
 CREATE TABLE IF NOT EXISTS scrape_runs (
