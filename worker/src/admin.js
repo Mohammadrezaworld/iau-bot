@@ -20,14 +20,17 @@ export async function audit(env, actorId, action, detail = "") {
     .run();
 }
 
+// جدول‌های ماندگار. (نام‌های قبلی links و phones وجود نداشتن و پشتیبان همیشه خطا می‌داد)
+// پست‌ها و تصمیم‌های تأیید/ارسال و تاریخچه‌ی اسکرپ هم ماندگارند؛ جدول‌های موقت عمداً نیستند (تست backup_coverage)
+export const BACKUP_TABLES = [
+  "settings", "admins", "admin_roles", "holidays", "events", "metro_versions",
+  "resources", "contacts", "course_categories", "jozve_files", "exam_files", "audit_log",
+  "posts", "post_outcomes", "scrape_batches", "scrape_batch_items", "scrape_runs", "scrape_events",
+];
+
 export async function buildBackup(env) {
-  // جدول‌های ماندگار. (نام‌های قبلی links و phones وجود نداشتن و پشتیبان همیشه خطا می‌داد)
-  const tables = [
-    "settings", "admins", "admin_roles", "holidays", "events", "metro_versions",
-    "resources", "contacts", "course_categories", "jozve_files", "exam_files", "audit_log",
-  ];
   const out = { created_utc: nowUtc() };
-  for (const t of tables) {
+  for (const t of BACKUP_TABLES) {
     const { results } = await env.DB.prepare(`SELECT * FROM ${t}`).all();
     out[t] = results;
   }
