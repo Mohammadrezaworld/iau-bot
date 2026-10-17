@@ -89,4 +89,14 @@ sent.length = 0; await cb(77, menuMsgId, "d:obریاضی عمومی");
 const profs = sent.find((x) => x.m === "editMessageText");
 ok("DM book shows author buttons with back to list", profs && JSON.stringify(profs.reply_markup).includes("d:fbریاضی عمومی|استوارت") && JSON.stringify(profs.reply_markup).includes('"d:b"'));
 
+// ۱۰. برچسب دکمه‌ها برای آلبوم با ترم یکسان یکتا باشه
+raw.exec("INSERT INTO exam_files (course, professor, title, file_name, file_size, channel_msg_id, created_utc) VALUES ('ریاضی','استوارت','ترم اول','',0,4001,1),('ریاضی','استوارت','ترم اول','',0,4002,1)");
+const realNow = Date.now; Date.now = () => realNow() + 60000; // بعد از سهمیه‌ی کلیک قبلی
+sent.length = 0; await cb(77, menuMsgId, "d:eدسته");
+sent.length = 0; await cb(77, menuMsgId, "d:fe" + "ریاضی|استوارت");
+const files = sent.find((x) => x.m === "editMessageText");
+const labels = files ? files.reply_markup.inline_keyboard.flat().map((b) => b.text).filter((t) => /ترم/.test(t)) : [];
+ok("DM file buttons for same term are distinct", labels.length === 2 && labels[0] !== labels[1]);
+Date.now = realNow;
+
 console.log(fails ? `FAILED ${fails}` : "ALL PASSED"); process.exit(fails ? 1 : 0);
