@@ -16,6 +16,14 @@ const LIMIT_TEXT = "لطفاً کمی صبر کن؛ هر نفر حداکثر ۲ 
 const MAX_NAME_BYTES = 29; // callback_data حداکثر ۶۴ بایته: «j:ef:» + درس + «|» + استاد
 const MAX_FILES_PER_SEND = 10;
 const EXAM_WORD = "نمونه سوال";
+const CONFIRM_TTL = 120; // پیام تأیید ثبت فایل بعد از ۲ دقیقه پاک می‌شه (کرون هر دقیقه، همون cleanupMetroMessages)
+const NEW_KIND_WORD = new Map([["کتاب", "book"], ["دوره", "course"], ["چنل", "channel"]]);
+const NEW_KIND_FORMAT = {
+  book: "کتاب | نام کتاب | نویسنده",
+  course: "دوره | نام دوره | مدرس",
+  channel: "چنل | نام چنل | موضوع",
+};
+const LABEL = { note: "جزوه", exam: "نمونه‌سوال", book: "کتاب", course: "دوره", channel: "چنل مفید" };
 const nowS = () => Math.floor(Date.now() / 1000);
 const bytes = (s) => new TextEncoder().encode(s).length;
 
@@ -23,6 +31,17 @@ const bytes = (s) => new TextEncoder().encode(s).length;
 // نمونه‌سوال: نمونه سوال | درس | استاد | ترم (ترم اختیاریه)
 export function parseCaption(caption) {
   const parts = String(caption || "").split("|").map((p) => p.trim());
+  const newKind = NEW_KIND_WORD.get(parts[0]);
+  if (newKind) {
+    // کتاب | نام کتاب | نویسنده · دوره | نام دوره | مدرس · چنل | نام چنل | موضوع
+    if (parts.length !== 3) return { error: `فرمت ${LABEL[newKind]}: ${NEW_KIND_FORMAT[newKind]}` };
+    const [, name, who] = parts;
+    if (name.length < 2 || who.length < 2) return { error: "نام و بخش دوم باید حداقل ۲ حرف باشه." };
+    if (bytes(name) > MAX_NAME_BYTES || bytes(who) > MAX_NAME_BYTES) {
+      return { error: `هر بخش حداکثر ${MAX_NAME_BYTES} بایت (تقریباً ۱۴ حرف فارسی) باشه.` };
+    }
+    return { kind: newKind, course: name, professor: who, title: "" };
+  }
   const isExam = parts[0] === EXAM_WORD;
   const fmtErr = isExam
     ? "فرمت نمونه‌سوال: نمونه سوال | درس | استاد | ترم (ترم اختیاریه)"
@@ -43,23 +62,49 @@ export function parseCaption(caption) {
   return { kind: isExam ? "exam" : "note", course, professor, title };
 }
 
+// فایل (document) یا عکس (photo) کانال؛ بقیه‌ی نوع‌ها (ویدیو، استیکر و…) نادیده گرفته می‌شن
+function mediaOf(post) {
+  if (post.document) return { file_name: post.document.file_name || "", file_size: post.document.file_size || 0 };
+  if (Array.isArray(post.photo) && post.photo.length) {
+    const largest = post.photo[post.photo.length - 1]; // آخرین سایز = بزرگ‌ترین
+    return { file_name: "", file_size: largest.file_size || 0 };
+  }
+  return null;
+}
+
 // پست جدید کانال خصوصی
 export async function handleJozvePost(env, post) {
   if (String(post.chat.id) !== String(env.JOZVE_CHANNEL)) return;
-  const doc = post.document;
-  if (!doc) return; // فقط فایل‌های document ثبت می‌شن
+  const media = mediaOf(post);
+  if (!media) return;
 
-  const parsed = parseCaption(post.caption);
+  // آلبوم: کپشن فقط روی فایل اول است؛ بقیه با مشخصات همون آلبوم (album_groups) ثبت می‌شن
+  const group = post.media_group_id ? String(post.media_group_id) : "";
+  let parsed;
+  if (!post.caption && group) {
+    const rec = await env.DB.prepare("SELECT kind, course, professor, title FROM album_groups WHERE media_group_id = ?").bind(group).first();
+    parsed = rec ? rec : { error: "این فایل آلبوم کپشن نداره؛ کپشن باید روی اولین فایل آلبوم باشه." };
+  } else {
+    parsed = parseCaption(post.caption);
+  }
   if (parsed.error) {
     return sendMessage(env, post.chat.id, `ثبت نشد. ${parsed.error}`);
   }
-  const table = parsed.kind === "exam" ? "exam_files" : "jozve_files";
+
   await env.DB.prepare(
-    `INSERT OR IGNORE INTO ${table} (course, professor, title, file_name, file_size, channel_msg_id, created_utc)
+    `INSERT OR IGNORE INTO ${TABLE[parsed.kind]} (course, professor, title, file_name, file_size, channel_msg_id, created_utc)
      VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).bind(parsed.course, parsed.professor, parsed.title, doc.file_name || "", doc.file_size || 0, post.message_id, nowS()).run();
-  const label = parsed.kind === "exam" ? "نمونه‌سوال" : "جزوه";
-  return sendMessage(env, post.chat.id, `ثبت شد (${label}): ${parsed.course} — ${parsed.professor}`);
+  ).bind(parsed.course, parsed.professor, parsed.title || "", media.file_name, media.file_size, post.message_id, nowS()).run();
+  if (group && post.caption) {
+    await env.DB.prepare(
+      "INSERT OR IGNORE INTO album_groups (media_group_id, kind, course, professor, title, created_utc) VALUES (?, ?, ?, ?, ?, ?)"
+    ).bind(group, parsed.kind, parsed.course, parsed.professor, parsed.title || "", nowS()).run();
+  }
+  // اعضای آلبوم بدون کپشن بی‌صدا ثبت می‌شن؛ فقط یک تأیید برای هر آلبوم فرستاده می‌شه
+  if (!post.caption) return;
+  const text = `ثبت شد (${LABEL[parsed.kind]}${group ? "، آلبوم" : ""}): ${parsed.course} — ${parsed.professor}`;
+  const sent = await tg(env, "sendMessage", { chat_id: post.chat.id, text, disable_web_page_preview: true });
+  await rememberMsg(env, post.chat.id, sent.message_id, CONFIRM_TTL);
 }
 
 async function rememberMsg(env, chatId, msgId, ttl = RESULT_TTL) {
@@ -137,9 +182,9 @@ function grid(buttons, tail = []) {
 }
 
 // دسته‌ها: "note" یا "exam"؛ هر کدوم جدول خودشون رو دارن
-const TABLE = { note: "jozve_files", exam: "exam_files" };
+const TABLE = { note: "jozve_files", exam: "exam_files", book: "book_files", course: "course_files", channel: "channel_files" };
 const CB = { note: { c: "j:c:", f: "j:f:" }, exam: { c: "j:ec:", f: "j:ef:" } };
-const TITLE = { note: "جزوه‌ها", exam: "نمونه‌سوال" };
+const TITLE = { note: "جزوه‌ها", exam: "نمونه‌سوال", book: "کتاب‌ها", course: "دوره‌ها", channel: "چنل‌های مفید" };
 // درس‌هایی که دسته ندارن، دروس اختصاصی حساب می‌شن (جدول‌ها: عمومی، معارف و پایه جدا ثبت شدن)
 const DEFAULT_CATEGORY = "دروس اختصاصی";
 const CATEGORY_ORDER = ["دروس عمومی", "معارف", "دروس پایه", "دروس اختصاصی"];
@@ -502,8 +547,11 @@ const DM_NOT_OWNER = "این منو مال تو نیست!";
 const DM_LINK_LIMIT = 40;
 export const DM_MENU_PROMPT = "یکی از گزینه‌ها رو انتخاب کن:";
 // کد نوع در callback: n = جزوه، e = نمونه‌سوال
-const kindOfLetter = (ch) => (ch === "e" ? "exam" : "note");
-const letterOf = (kind) => (kind === "note" ? "n" : "e");
+// n جزوه · e نمونه‌سوال · b کتاب · u دوره · h چنل مفید
+const LETTER_KIND = { n: "note", e: "exam", b: "book", u: "course", h: "channel" };
+const KIND_LETTER = { note: "n", exam: "e", book: "b", course: "u", channel: "h" };
+const kindOfLetter = (ch) => LETTER_KIND[ch] || "note";
+const letterOf = (kind) => KIND_LETTER[kind];
 
 // دکمه‌ها: d:m منوی اصلی · d:n|d:e دسته‌ها · d:c<K><دسته> درس‌ها · d:o<K><درس> استادها · d:f<K><درس>|<استاد> فایل‌ها · d:x بستن
 // K = n (جزوه) یا e (نمونه‌سوال). نام درس و استاد حداکثر ۲۹ بایت، پس callback_data از ۶۴ بایت رد نمی‌شه.
@@ -574,7 +622,24 @@ function dmMainMarkup() {
   return grid([
     { text: "جزوه‌ها", callback_data: "d:n" },
     { text: "نمونه‌سوال", callback_data: "d:e" },
+    { text: "کتاب", callback_data: "d:b" },
+    { text: "دوره", callback_data: "d:u" },
+    { text: "چنل مفید", callback_data: "d:h" },
   ], [{ text: "بستن", callback_data: "d:x" }]);
+}
+
+// کتاب، دوره و چنل مفید دسته‌ی درس ندارن: مستقیم فهرست نام‌ها
+const LISTED_LETTERS = ["b", "u", "h"];
+async function dmNamesView(env, kind) {
+  const { results } = await env.DB.prepare(`SELECT DISTINCT course FROM ${TABLE[kind]} ORDER BY course LIMIT 60`).all();
+  const buttons = results
+    .map((r) => r.course)
+    .filter((c) => bytes(c) <= MAX_NAME_BYTES)
+    .map((c) => ({ text: c, callback_data: `d:o${letterOf(kind)}${c}` }));
+  return {
+    text: buttons.length ? `${TITLE[kind]}: کدوم؟` : `فعلاً ${TITLE[kind]} ثبت نشده.`,
+    markup: grid(buttons, [{ text: "بازگشت", callback_data: "d:m" }, { text: "بستن", callback_data: "d:x" }]),
+  };
 }
 
 async function dmCategoriesView(env, kind) {
@@ -610,10 +675,12 @@ async function dmProfessorsView(env, kind, course) {
     .map((r) => r.professor)
     .filter((p) => bytes(p) <= MAX_NAME_BYTES)
     .map((p) => ({ text: p, callback_data: `d:f${letterOf(kind)}${course}|${p}` }));
-  const cat = await categoryOf(env, course);
+  const back = LISTED_LETTERS.includes(letterOf(kind))
+    ? `d:${letterOf(kind)}`
+    : `d:c${letterOf(kind)}${await categoryOf(env, course)}`;
   return {
     text: buttons.length ? `${course}: کدوم استاد؟` : "موردی پیدا نشد.",
-    markup: grid(buttons, [{ text: "بازگشت", callback_data: `d:c${letterOf(kind)}${cat}` }, { text: "بستن", callback_data: "d:x" }]),
+    markup: grid(buttons, [{ text: "بازگشت", callback_data: back }, { text: "بستن", callback_data: "d:x" }]),
   };
 }
 
@@ -625,8 +692,8 @@ async function dmFilesView(env, kind, course, prof) {
   const back = { text: "بازگشت", callback_data: `d:o${letterOf(kind)}${course}` };
   if (!username) return { text: "لینک کانال تنظیم نشده؛ به ادمین اطلاع بده.", markup: grid([], [back, { text: "بستن", callback_data: "d:x" }]) };
   if (!results.length) return { text: "موردی پیدا نشد.", markup: grid([], [back, { text: "بستن", callback_data: "d:x" }]) };
-  const rows = results.map((r) => {
-    const label = Array.from(r.title || r.file_name || `پست ${r.channel_msg_id}`).slice(0, 60).join("");
+  const rows = results.map((r, i) => {
+    const label = Array.from(r.title || r.file_name || `فایل ${i + 1}`).slice(0, 60).join("");
     return [{ text: label, url: `https://t.me/${username}/${r.channel_msg_id}` }];
   });
   return {
@@ -640,6 +707,7 @@ async function dmView(env, data) {
   const t = data[2];
   if (t === "m") return { text: DM_MENU_PROMPT, markup: dmMainMarkup() };
   if (t === "n" || t === "e") return dmCategoriesView(env, kindOfLetter(t));
+  if (LISTED_LETTERS.includes(t) && data.length === 3) return dmNamesView(env, kindOfLetter(t));
   const kind = kindOfLetter(data[3]);
   const payload = data.slice(4);
   if (t === "c") return dmCoursesView(env, kind, payload);
