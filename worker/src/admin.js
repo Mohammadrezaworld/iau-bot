@@ -24,7 +24,7 @@ export async function audit(env, actorId, action, detail = "") {
 // پست‌ها و تصمیم‌های تأیید/ارسال و تاریخچه‌ی اسکرپ هم ماندگارند؛ جدول‌های موقت عمداً نیستند (تست backup_coverage)
 export const BACKUP_TABLES = [
   "settings", "admins", "admin_roles", "holidays", "events", "metro_versions",
-  "resources", "contacts", "course_categories", "jozve_files", "exam_files", "audit_log",
+  "resources", "contacts", "course_categories", "jozve_files", "exam_files", "book_files", "course_files", "channel_files", "album_groups", "audit_log",
   "posts", "post_outcomes", "scrape_batches", "scrape_batch_items", "scrape_runs", "scrape_events",
 ];
 
