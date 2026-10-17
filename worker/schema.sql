@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS posts (
   sent_at_utc  INTEGER,                  -- NULL یعنی هنوز به گروه نرفته
   UNIQUE (source, channel, post_id)
 );
+CREATE INDEX IF NOT EXISTS posts_sent_at ON posts (sent_at_utc);
 
 -- سوابق اجرای اسکرپ (برای /updates و هشدار خطا)
 CREATE TABLE IF NOT EXISTS scrape_runs (
@@ -231,6 +232,51 @@ CREATE TABLE IF NOT EXISTS exam_files (
   created_utc     INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS exam_files_course ON exam_files (course, professor);
+
+-- کتاب، دوره و چنل مفید: مثل جزوه‌ها (course = نام، professor = نویسنده/مدرس/چنل‌دار)؛ بدون دسته‌ی درس
+CREATE TABLE IF NOT EXISTS book_files (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  course          TEXT NOT NULL,
+  professor       TEXT NOT NULL,
+  title           TEXT NOT NULL DEFAULT '',
+  file_name       TEXT NOT NULL DEFAULT '',
+  file_size       INTEGER NOT NULL DEFAULT 0,
+  channel_msg_id  INTEGER NOT NULL UNIQUE,
+  created_utc     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS book_files_course ON book_files (course, professor);
+CREATE TABLE IF NOT EXISTS course_files (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  course          TEXT NOT NULL,
+  professor       TEXT NOT NULL,
+  title           TEXT NOT NULL DEFAULT '',
+  file_name       TEXT NOT NULL DEFAULT '',
+  file_size       INTEGER NOT NULL DEFAULT 0,
+  channel_msg_id  INTEGER NOT NULL UNIQUE,
+  created_utc     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS course_files_course ON course_files (course, professor);
+CREATE TABLE IF NOT EXISTS channel_files (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  course          TEXT NOT NULL,
+  professor       TEXT NOT NULL,
+  title           TEXT NOT NULL DEFAULT '',
+  file_name       TEXT NOT NULL DEFAULT '',
+  file_size       INTEGER NOT NULL DEFAULT 0,
+  channel_msg_id  INTEGER NOT NULL UNIQUE,
+  created_utc     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS channel_files_course ON channel_files (course, professor);
+
+-- آلبوم (چند فایل با یک media_group_id): کپشن فقط روی فایل اول است؛ بقیه از این جدول نوع و مشخصات رو می‌گیرن
+CREATE TABLE IF NOT EXISTS album_groups (
+  media_group_id TEXT PRIMARY KEY,
+  kind           TEXT NOT NULL,
+  course         TEXT NOT NULL,
+  professor      TEXT NOT NULL,
+  title          TEXT NOT NULL DEFAULT '',
+  created_utc    INTEGER NOT NULL
+);
 
 -- دسته‌ی هر درس برای منوی /jozve (مثلاً دروس عمومی، معارف، دروس اختصاصی)
 CREATE TABLE IF NOT EXISTS course_categories (

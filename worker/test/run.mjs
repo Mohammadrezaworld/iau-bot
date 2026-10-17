@@ -17,6 +17,9 @@ const SUITES = [
   "group_moved.mjs", // پیام انتقال گروه
   "group_guidance.mjs", // راهنمای گروه
   "quiet_all.mjs", // ساعت سکوت: گروه ساکت، پیوی فعال
+  "backup_coverage.mjs", // پشتیبان: همه‌ی جدول‌های ماندگار schema پوشش داده شده‌اند
+  "parity_question.mjs", // پرسش آزاد «زوج یا فرد؟» در گروه = /week
+  "jozve_upload.mjs", // جزوه/کتاب/دوره/چنل: عکس، آلبوم، پیام تأیید ۱۲۰ ثانیه، منوی پیوی
 ];
 
 let failed = 0;
