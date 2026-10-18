@@ -95,10 +95,12 @@ export async function startWizard(env, userId, chatId, flow) {
 }
 
 // ذخیره‌ی مقدار یک مرحله و رفتن به مرحله‌ی بعد (یا تأیید)
-async function advance(env, userId, chatId, sess, value) {
+async function advance(env, userId, chatId, sess, value, mid = null) {
   const data = JSON.parse(sess.data);
   const s = FLOWS[sess.flow][sess.step];
   data[s.key] = value;
+  // شناسه‌ی پیام متنی که این مرحله را پر کرد؛ retry همان پیام دوباره مصرفش نمی‌کند
+  if (mid !== null) data._lastMid = mid;
   // رویداد یک‌روزه: پایان = شروع
   if (sess.flow === "event" && s.key === "end" && !value) data.end = data.start;
   const next = sess.step + 1;
@@ -115,6 +117,7 @@ export async function handleWizardText(env, message) {
   const userId = message.from.id;
   const sess = await getSession(env, userId);
   if (!sess) return false;
+  if (JSON.parse(sess.data || "{}")._lastMid === message.message_id) return true; // retry همان پیام
   const text = normalizeDigits((message.text || "").trim());
   if (text.startsWith("/")) { await clearSession(env, userId); return false; }
   if (sess.flow === "edit") return handleEditText(env, message, sess, text);
@@ -130,7 +133,7 @@ export async function handleWizardText(env, message) {
     await sendMessage(env, message.chat.id, s.err);
     return true;
   }
-  await advance(env, userId, message.chat.id, sess, value);
+  await advance(env, userId, message.chat.id, sess, value, message.message_id);
   return true;
 }
 
@@ -259,9 +262,11 @@ export async function handleCallback(env, cq) {
   }
   if (!sess) return answer("این جریان دیگه فعال نیست");
 
+  // دکمه‌ی تأیید فقط در مرحله‌ی خلاصه (بعد از آخرین مرحله) معنی دارد؛ دکمه‌ی قدیمی جلسه‌ی دیگه اثر نداره
+  if (data === "w:ok" && sess.step !== FLOWS[sess.flow].length) return answer("این مرحله دیگه فعال نیست");
   if (data === "w:ok") {
     const d = JSON.parse(sess.data);
-    const { _sid, ...fields } = d;
+    const { _sid, _lastMid, ...fields } = d;
     // جلسه‌ی قدیمی (قبل از شناسه): کلید پایدار نداره؛ بدون ثبت، دوباره شروع کنه
     if (!_sid) {
       await clearSession(env, userId);
@@ -298,7 +303,7 @@ export async function handleCallback(env, cq) {
     return advance(env, userId, chatId, sess, "");
   }
 
-  if (data.startsWith("w:kind:") && sess && sess.flow === "event") {
+  if (data.startsWith("w:kind:") && sess && sess.flow === "event" && FLOWS.event[sess.step]?.key === "kind") {
     const k = data.split(":")[2];
     await answer();
     return advance(env, userId, chatId, sess, KINDS[k] || KINDS.other);
