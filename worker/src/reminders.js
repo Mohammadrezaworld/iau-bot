@@ -2,10 +2,13 @@
 import { tg } from "./telegram.js";
 import { tehranToday, addDays, faDate } from "./calendar.js";
 import { getSetting } from "./public.js";
+import { inTehranQuietHours } from "./channels.js";
 
 export async function sendReminders(env, cron) {
   const groupId = await getSetting(env, "group_id", "");
   if (!groupId) return;
+  // ساعت سکوت گروه: ارسال نمی‌شه و در reminder_log هم ثبت نمی‌شه، تا اجرای بعدی بیرون از سکوت بفرستدش
+  if (await inTehranQuietHours(env)) return;
 
   const today = tehranToday();
   const isEvening = cron === "30 16 * * *";
