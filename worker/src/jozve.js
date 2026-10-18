@@ -738,22 +738,24 @@ export async function openDmMenu(env, uid, text = DM_MENU_PROMPT, host = false) 
 // سهمیه‌ی کلیک هر کاربر در منوی پیوی: یک کلیک در ثانیه، با تحمل ۳ کلیک پشت‌سرهم
 const DM_CLICK_BURST = 3;
 const dmClickKey = (uid) => `dm_clicks:${uid}`;
-async function takeDmClick(env, uid) {
-  const now = Date.now();
-  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = ?").bind(dmClickKey(uid)).first();
-  let b = null;
-  try { b = row && row.value ? JSON.parse(row.value) : null; } catch { b = null; }
-  const tokens = Math.min(DM_CLICK_BURST, b ? b.t + (now - b.at) / 1000 : DM_CLICK_BURST);
-  if (tokens < 1) {
-    await env.DB.prepare(
-      "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-    ).bind(dmClickKey(uid), JSON.stringify({ t: tokens, at: now })).run();
-    return false;
+// compare-and-set: نوشتن فقط وقتی مقدار هنوز همان چیزی است که خوانده شد؛ وگرنه دوباره خوانده و امتحان می‌شود
+export async function takeDmClick(env, uid) {
+  const key = dmClickKey(uid);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const row = await env.DB.prepare("SELECT value FROM settings WHERE key = ?").bind(key).first();
+    const old = row && row.value ? row.value : null;
+    const now = Date.now();
+    let b = null;
+    try { b = old ? JSON.parse(old) : null; } catch { b = null; }
+    const tokens = Math.min(DM_CLICK_BURST, b ? b.t + (now - b.at) / 1000 : DM_CLICK_BURST);
+    const allowed = tokens >= 1;
+    const next = JSON.stringify({ t: allowed ? tokens - 1 : tokens, at: now });
+    const res = old === null
+      ? await env.DB.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)").bind(key, next).run()
+      : await env.DB.prepare("UPDATE settings SET value = ? WHERE key = ? AND value = ?").bind(next, key, old).run();
+    if (res.meta.changes === 1) return allowed;
   }
-  await env.DB.prepare(
-    "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-  ).bind(dmClickKey(uid), JSON.stringify({ t: tokens - 1, at: now })).run();
-  return true;
+  return false;
 }
 
 export async function handleDmCallback(env, cq) {
