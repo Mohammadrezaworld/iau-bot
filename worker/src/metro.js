@@ -1,7 +1,7 @@
 // /metro: منوی مرحله‌به‌مرحله‌ی گروه (مبدأ ← مقصد ← نتیجه) و آپلود جدول توسط ادمین در DM.
 // وضعیت منو داخل خود دکمه‌هاست (بدون جدول state)؛ فقط درخواست‌کننده می‌تونه از دکمه‌ها استفاده کنه.
 import { tg, sendMessage, tryDeleteMessage } from "./telegram.js";
-import { isAdmin, audit } from "./admin.js";
+import { isAdmin, audit, getRole } from "./admin.js";
 import { tehranToday, faDate } from "./calendar.js";
 import { pushUndo } from "./undo.js";
 import {
@@ -257,6 +257,9 @@ export async function handleMetroUploadCallback(env, cq) {
   ).bind(Number(idStr), cq.from.id).first();
   if (!p || p.expires_utc < nowS()) return ack(env, cq, "این درخواست منقضی شده؛ فایل را دوباره بفرستید.");
   await env.DB.prepare("DELETE FROM pending_actions WHERE id = ?").bind(p.id).run();
+  // سطح دسترسی همین‌الان بررسی می‌شه؛ اگه ادمین حذف یا به «محتوا» تنزل داده شده، جابه‌جایی انجام نمی‌شه
+  const role = await getRole(env, cq.from.id);
+  if (!role || role === "content") return ack(env, cq, "این کار برای سطح دسترسی شما نیست.");
 
   if (action !== "ok") return ack(env, cq, "لغو شد");
 
