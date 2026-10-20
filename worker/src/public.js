@@ -77,13 +77,18 @@ async function sendFresh(env, chatId, text, replyTo = null) {
 
 // کش پاسخ: کلید = نام دستور + روز + هش متن. اگه متن عوض شده باشه (مثلاً تغییر شروع ترم یا شماره‌ها)، جواب تازه می‌ره.
 // اگه سؤال تکراری باشه، ربات زیر پاسخ قبلی ریپلای می‌زنه؛ اگه پیام قبلی پاک شده باشه، جواب تازه می‌ده.
-export async function sendCachedAnswer(env, chatId, baseKey, text, send) {
+export async function sendCachedAnswer(env, chatId, baseKey, text, send, reactTo = null) {
   const key = `${baseKey}|${await shortHash(text)}`;
   const cached = await env.DB.prepare("SELECT message_id FROM week_cache WHERE key = ? AND chat_id = ?")
     .bind(key, chatId).first();
 
   if (cached) {
     try {
+      // پرسش آزاد تکراری: فقط یک واکنش روی خود پرسش (پیام تازه نمی‌سازد)
+      if (reactTo) {
+        await tg(env, "setMessageReaction", { chat_id: chatId, message_id: reactTo, reaction: [{ type: "emoji", emoji: "👀" }] });
+        return;
+      }
       // این یادآوری بعد از ۶۰ ثانیه پاک می‌شه (کرون پاک‌سازی هر دقیقه)، تا گروه شلوغ نشه
       const note = await tg(env, "sendMessage", {
         chat_id: chatId,
@@ -117,5 +122,5 @@ export async function answerPublic(env, chatId, cmd, replyTo = null) {
   const startIso = await getSetting(env, "semester_start", "2026-09-12");
   const today = tehranToday();
   const text = buildAnswer(cmd, startIso, today);
-  return sendCachedAnswer(env, chatId, `${cmd}|${today}`, text, () => sendFresh(env, chatId, text, replyTo));
+  return sendCachedAnswer(env, chatId, `${cmd}|${today}`, text, () => sendFresh(env, chatId, text, replyTo), replyTo);
 }

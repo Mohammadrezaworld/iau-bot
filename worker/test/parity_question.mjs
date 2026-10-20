@@ -45,6 +45,6 @@ ok("normal group message gets no reply", sent.filter((x) => x.m === "sendMessage
 
 // ۴. پرسش دوم از کاربر دیگر: جواب تکراری زیر پاسخ قبلی (کش /week)
 sent.length = 0; await g(103, "زوج یا فرد؟", 5003);
-ok("repeated question replies under the earlier answer", sent.some((x) => x.m === "sendMessage" && /بالاتره/.test(x.text || "")));
+ok("repeated question gets a reaction on the question (no new text)", sent.some((x) => x.m === "setMessageReaction" && x.message_id === 5003) && !sent.some((x) => x.m === "sendMessage"));
 
 console.log(fails ? `FAILED ${fails}` : "ALL PASSED"); process.exit(fails ? 1 : 0);

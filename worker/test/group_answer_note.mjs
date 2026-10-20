@@ -9,12 +9,13 @@ const { cleanupMetroMessages } = await import(WORKER + "src/metro.js");
 const raw = new DatabaseSync(":memory:");
 raw.exec(readFileSync(WORKER + "schema.sql", "utf8"));
 const db = { prepare(sql) { const st = raw.prepare(sql); return { bind: (...a) => ({ first: async () => st.get(...a) ?? null, all: async () => ({ results: st.all(...a) }), run: async () => { st.run(...a); return { meta: { changes: 1 } }; } }), first: async () => st.get() ?? null, all: async () => ({ results: st.all() }), run: async () => { st.run(); return {}; } }; } };
-const sent = []; let mid = 1200;
+const sent = []; let mid = 1200; let failReaction = false;
 globalThis.fetch = async (u, o) => {
   const m = String(u).split("/").pop(); const b = o && o.body ? JSON.parse(o.body) : {};
   const id = ++mid;
   sent.push({ m, ...b, _id: id });
-  return Response.json({ ok: true, result: { message_id: id } });
+  if (m === "setMessageReaction" && failReaction) return Response.json({ ok: false, description: "reaction not allowed" }, { status: 400 });
+  return Response.json({ ok: true, result: m === "setMessageReaction" ? true : { message_id: id } });
 };
 const env = { TELEGRAM_BOT_TOKEN: "1:T", OWNER_ID: "5", DB: db };
 const secret = await webhookSecret(env);
@@ -41,5 +42,23 @@ sent.length = 0;
 await cleanupMetroMessages(env);
 ok("note is deleted by the minute cleanup after 60s", !!note && sent.some((x) => x.m === "deleteMessage" && x.message_id === noteId));
 Date.now = () => base;
+
+// پرسش آزاد تکراری: واکنش روی خود پرسش، بدون پیام متنی تازه
+Date.now = () => base + 120000;
+const q = "دوستان هفته زوجیم یا فرد؟";
+await g(203, q, 6010); // اولین پرسش: جواب اصلی (ریپلای)
+sent.length = 0;
+await g(204, q, 6011);
+const react = sent.find((x) => x.m === "setMessageReaction");
+ok("duplicate question gets a reaction on the question itself", !!react && react.message_id === 6011 && react.reaction[0].emoji === "👀");
+ok("duplicate question gets no text note", !sent.some((x) => x.m === "sendMessage" && /بالاتره/.test(x.text || "")));
+ok("question message is not deleted", !sent.some((x) => x.m === "deleteMessage" && x.message_id === 6011));
+
+// واکنش شکست بخورد: جواب تازه داده می‌شود (کاربر بی‌جواب نمی‌ماند)
+failReaction = true;
+sent.length = 0;
+await g(205, q, 6012);
+failReaction = false;
+ok("if reaction fails, a fresh reply to the question is sent", sent.some((x) => x.m === "sendMessage" && x.reply_to_message_id === 6012));
 
 console.log(fails ? `FAILED ${fails}` : "ALL PASSED"); process.exit(fails ? 1 : 0);
