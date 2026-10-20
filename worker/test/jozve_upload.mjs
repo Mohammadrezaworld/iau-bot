@@ -7,6 +7,12 @@ const worker = (await import(WORKER + "src/index.js")).default;
 const { webhookSecret } = await import(WORKER + "src/telegram.js");
 const raw = new DatabaseSync(":memory:");
 raw.exec(readFileSync(WORKER + "schema.sql", "utf8"));
+// نام‌های از قبل ثبت‌شده: کپشن‌های این تست دقیقاً با همین‌ها می‌خونن تا ثبت فوری بمونه (نام تازه حالا تأیید می‌خواد)
+raw.exec(`INSERT INTO book_files (course, professor, title, file_name, file_size, channel_msg_id, created_utc) VALUES
+  ('ریاضی عمومی','استوارت','','',0,9001,1), ('جبر خطی','کیوان','','',0,9002,1)`);
+raw.exec(`INSERT INTO course_files (course, professor, title, file_name, file_size, channel_msg_id, created_utc) VALUES ('پایتون پیشرفته','علی رضایی','','',0,9003,1)`);
+raw.exec(`INSERT INTO channel_files (course, professor, title, file_name, file_size, channel_msg_id, created_utc) VALUES ('ریاضیات کاربردی','ترجمه','','',0,9004,1)`);
+raw.exec(`INSERT INTO jozve_files (course, professor, title, file_name, file_size, channel_msg_id, created_utc) VALUES ('درس تست','استاد الف','','',0,9005,1)`);
 const db = { prepare(sql) { const st = raw.prepare(sql); return { bind: (...a) => ({ first: async () => st.get(...a) ?? null, all: async () => ({ results: st.all(...a) }), run: async () => { st.run(...a); return { meta: { changes: 1 } }; } }), first: async () => st.get() ?? null, all: async () => ({ results: st.all() }), run: async () => { st.run(); return {}; } }; } };
 const sent = []; let mid = 500;
 globalThis.fetch = async (u, o) => {

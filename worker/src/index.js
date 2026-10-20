@@ -7,7 +7,7 @@ import { sendReminders } from "./reminders.js";
 import { handleCallback } from "./wizard.js";
 import { handleKeywordCallback } from "./keywords.js";
 import { handleHolidayCallback } from "./holidays.js";
-import { handleJozvePost, handleJozveCommand, handleJozveCallback, handleJozveRemoveCallback, handleDmCallback, groupMovedGuide, dmIsMember, DM_NOT_MEMBER } from "./jozve.js";
+import { handleJozvePost, handleJozveCommand, handleJozveCallback, handleJozveRemoveCallback, handleJozvePickCallback, handleDmCallback, groupMovedGuide, dmIsMember, DM_NOT_MEMBER } from "./jozve.js";
 import { cleanPostText, inTehranQuietHours, handleStatusRefresh } from "./channels.js";
 import { prepareBatch, handleBatchCallback, expireBatches, listStalledBatches, approveBatch } from "./batches.js";
 import { scrapeSettingsCommand, handleScrapeSettingsCallback } from "./scrape_mode.js";
@@ -224,6 +224,7 @@ async function dispatchUpdate(env, update, ctx = null) {
       }
       return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
     }
+    if (data.startsWith("jp:")) return handleJozvePickCallback(env, cq);
     if (!cq.message || !cq.message.chat) return;
     if (data.startsWith("d:") && cq.message.chat.type === "private") {
       // منوی شخصی جزوه‌ها در پیوی (کاربر عادی و ادمین)
