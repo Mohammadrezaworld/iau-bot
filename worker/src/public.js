@@ -10,14 +10,15 @@ const nowUtc = () => Math.floor(Date.now() / 1000);
 // پرسش آزاد زوج/فرد: فقط اگه همه‌ی کلمه‌ها از مجموعه‌ی مجاز باشن و هر دو «زوج» و «فرد» باشن.
 // مثال‌ها: «زوج یا فرد؟»، «این هفته فرد هست یا زوج؟»، «این هفته زوج هست یا فرد»
 // شکل‌های محاوره‌ای («زوجه»، «فرده») به زوج و فرد برمی‌گردن. پرسش باید «؟» یا «یا» داشته باشه؛ جمله‌ی خبری («این هفته فرد هست») جواب نمی‌گیره.
-const PARITY_WORDS = new Set(["این", "هفته", "زوج", "فرد", "زوجه", "فرده", "یا", "هست"]);
+// کلمه‌های حاشیه‌ای مثل «دوستان» و «بچه‌ها» مجازند؛ شکل‌های «زوجیم/فردیم» و «زوجه/فرده» به زوج و فرد برمی‌گردن
+const PARITY_WORDS = new Set(["این", "هفته", "زوج", "فرد", "زوجه", "فرده", "زوجیم", "فردیم", "یا", "هست", "دوستان", "بچه", "ها", "سلام", "عزیزان", "همگی", "خب", "راستی", "ببخشید"]);
 export function isParityQuestion(text) {
   const raw = String(text || "");
   if (!/[؟?]/.test(raw) && !/(^|\s)یا(\s|$)/.test(raw.replace(/\u200c/g, " "))) return false;
   const words = raw.replace(/\u200c/g, " ").replace(/[؟?!.،,]/g, " ").trim().split(/\s+/).filter(Boolean);
-  if (!words.length || words.length > 6) return false;
+  if (!words.length || words.length > 9) return false;
   if (!words.every((w) => PARITY_WORDS.has(w))) return false;
-  const norm = words.map((w) => (w === "زوجه" ? "زوج" : w === "فرده" ? "فرد" : w));
+  const norm = words.map((w) => ({ زوجه: "زوج", فرده: "فرد", زوجیم: "زوج", فردیم: "فرد" })[w] || w);
   // هر دو کلمه، یا «این هفته» + یک کلمه («این هفته فرده؟»). «زوج؟» تنها جواب نمی‌گیره.
   const hasBoth = norm.includes("زوج") && norm.includes("فرد");
   const thisWeekOne = words.includes("هفته") && (norm.includes("زوج") || norm.includes("فرد"));
