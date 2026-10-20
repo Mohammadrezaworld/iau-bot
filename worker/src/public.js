@@ -11,18 +11,23 @@ const nowUtc = () => Math.floor(Date.now() / 1000);
 // مثال‌ها: «زوج یا فرد؟»، «این هفته فرد هست یا زوج؟»، «این هفته زوج هست یا فرد»
 // شکل‌های محاوره‌ای («زوجه»، «فرده») به زوج و فرد برمی‌گردن. پرسش باید «؟» یا «یا» داشته باشه؛ جمله‌ی خبری («این هفته فرد هست») جواب نمی‌گیره.
 // کلمه‌های حاشیه‌ای مثل «دوستان» و «بچه‌ها» مجازند؛ شکل‌های «زوجیم/فردیم» و «زوجه/فرده» به زوج و فرد برمی‌گردن
-const PARITY_WORDS = new Set(["این", "هفته", "زوج", "فرد", "زوجه", "فرده", "زوجیم", "فردیم", "یا", "هست", "دوستان", "بچه", "ها", "سلام", "عزیزان", "همگی", "خب", "راستی", "ببخشید"]);
+const PARITY_WORDS = new Set(["این", "هفته", "زوج", "فرد", "زوجه", "فرده", "زوجیم", "فردیم", "یا", "هست", "دوستان", "بچه", "سلام", "عزیزان", "همگی", "خب", "راستی", "ببخشید"]);
+// کلمه‌های حاشیه‌ای (سلام، دوستان…). در سؤالی که «هفته» ندارد حداکثر یکی مجاز است، تا «سلام دوستان زوج یا فرد؟» که شاید درباره‌ی هفته نیست جواب نگیرد.
+const FILLER_WORDS = new Set(["دوستان", "بچه", "سلام", "عزیزان", "همگی", "خب", "راستی", "ببخشید"]);
+const PARITY_FORM = { زوجه: "زوج", فرده: "فرد", زوجیم: "زوج", فردیم: "فرد" };
 export function isParityQuestion(text) {
-  const raw = String(text || "");
+  // «بچه ها» و «بچه‌ها» یک کلمه‌ی حاشیه‌ای حساب می‌شن
+  const raw = String(text || "").replace(/بچه[\s\u200c]+ها/g, "بچه");
   if (!/[؟?]/.test(raw) && !/(^|\s)یا(\s|$)/.test(raw.replace(/\u200c/g, " "))) return false;
   const words = raw.replace(/\u200c/g, " ").replace(/[؟?!.،,]/g, " ").trim().split(/\s+/).filter(Boolean);
   if (!words.length || words.length > 9) return false;
   if (!words.every((w) => PARITY_WORDS.has(w))) return false;
-  const norm = words.map((w) => ({ زوجه: "زوج", فرده: "فرد", زوجیم: "زوج", فردیم: "فرد" })[w] || w);
-  // هر دو کلمه، یا «این هفته» + یک کلمه («این هفته فرده؟»). «زوج؟» تنها جواب نمی‌گیره.
+  const norm = words.map((w) => PARITY_FORM[w] || w);
   const hasBoth = norm.includes("زوج") && norm.includes("فرد");
-  const thisWeekOne = words.includes("هفته") && (norm.includes("زوج") || norm.includes("فرد"));
-  return hasBoth || thisWeekOne;
+  // با «هفته»: هر دو کلمه، یا «این هفته» + یک کلمه. بدون «هفته»: فقط «زوج … فرد» با حداکثر یک کلمه‌ی حاشیه‌ای
+  if (words.includes("هفته")) return hasBoth || norm.includes("زوج") || norm.includes("فرد");
+  const fillers = words.filter((w) => FILLER_WORDS.has(w)).length;
+  return hasBoth && fillers <= 1;
 }
 
 export async function getSetting(env, key, fallback = null) {
@@ -79,12 +84,16 @@ export async function sendCachedAnswer(env, chatId, baseKey, text, send) {
 
   if (cached) {
     try {
-      await tg(env, "sendMessage", {
+      // این یادآوری بعد از ۶۰ ثانیه پاک می‌شه (کرون پاک‌سازی هر دقیقه)، تا گروه شلوغ نشه
+      const note = await tg(env, "sendMessage", {
         chat_id: chatId,
         text: "جواب این سؤال بالاتره ↑",
         reply_to_message_id: cached.message_id,
         allow_sending_without_reply: false,
       });
+      await env.DB.prepare(
+        "INSERT INTO metro_messages (chat_id, message_id, delete_at_utc) VALUES (?, ?, ?) ON CONFLICT(chat_id, message_id) DO UPDATE SET delete_at_utc = excluded.delete_at_utc"
+      ).bind(chatId, note.message_id, nowUtc() + 60).run();
       return;
     } catch {
       // پیام اصلی پاک شده یا در دسترس نیست: جواب تازه می‌دیم
