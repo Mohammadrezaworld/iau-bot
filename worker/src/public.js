@@ -10,18 +10,24 @@ const nowUtc = () => Math.floor(Date.now() / 1000);
 // پرسش آزاد زوج/فرد: فقط اگه همه‌ی کلمه‌ها از مجموعه‌ی مجاز باشن و هر دو «زوج» و «فرد» باشن.
 // مثال‌ها: «زوج یا فرد؟»، «این هفته فرد هست یا زوج؟»، «این هفته زوج هست یا فرد»
 // شکل‌های محاوره‌ای («زوجه»، «فرده») به زوج و فرد برمی‌گردن. پرسش باید «؟» یا «یا» داشته باشه؛ جمله‌ی خبری («این هفته فرد هست») جواب نمی‌گیره.
-const PARITY_WORDS = new Set(["این", "هفته", "زوج", "فرد", "زوجه", "فرده", "یا", "هست"]);
+// کلمه‌های حاشیه‌ای مثل «دوستان» و «بچه‌ها» مجازند؛ شکل‌های «زوجیم/فردیم» و «زوجه/فرده» به زوج و فرد برمی‌گردن
+const PARITY_WORDS = new Set(["این", "هفته", "زوج", "فرد", "زوجه", "فرده", "زوجیم", "فردیم", "یا", "هست", "دوستان", "بچه", "سلام", "عزیزان", "همگی", "خب", "راستی", "ببخشید"]);
+// کلمه‌های حاشیه‌ای (سلام، دوستان…). در سؤالی که «هفته» ندارد حداکثر یکی مجاز است، تا «سلام دوستان زوج یا فرد؟» که شاید درباره‌ی هفته نیست جواب نگیرد.
+const FILLER_WORDS = new Set(["دوستان", "بچه", "سلام", "عزیزان", "همگی", "خب", "راستی", "ببخشید"]);
+const PARITY_FORM = { زوجه: "زوج", فرده: "فرد", زوجیم: "زوج", فردیم: "فرد" };
 export function isParityQuestion(text) {
-  const raw = String(text || "");
+  // «بچه ها» و «بچه‌ها» یک کلمه‌ی حاشیه‌ای حساب می‌شن
+  const raw = String(text || "").replace(/بچه[\s\u200c]+ها/g, "بچه");
   if (!/[؟?]/.test(raw) && !/(^|\s)یا(\s|$)/.test(raw.replace(/\u200c/g, " "))) return false;
   const words = raw.replace(/\u200c/g, " ").replace(/[؟?!.،,]/g, " ").trim().split(/\s+/).filter(Boolean);
-  if (!words.length || words.length > 6) return false;
+  if (!words.length || words.length > 9) return false;
   if (!words.every((w) => PARITY_WORDS.has(w))) return false;
-  const norm = words.map((w) => (w === "زوجه" ? "زوج" : w === "فرده" ? "فرد" : w));
-  // هر دو کلمه، یا «این هفته» + یک کلمه («این هفته فرده؟»). «زوج؟» تنها جواب نمی‌گیره.
+  const norm = words.map((w) => PARITY_FORM[w] || w);
   const hasBoth = norm.includes("زوج") && norm.includes("فرد");
-  const thisWeekOne = words.includes("هفته") && (norm.includes("زوج") || norm.includes("فرد"));
-  return hasBoth || thisWeekOne;
+  // با «هفته»: هر دو کلمه، یا «این هفته» + یک کلمه. بدون «هفته»: فقط «زوج … فرد» با حداکثر یک کلمه‌ی حاشیه‌ای
+  if (words.includes("هفته")) return hasBoth || norm.includes("زوج") || norm.includes("فرد");
+  const fillers = words.filter((w) => FILLER_WORDS.has(w)).length;
+  return hasBoth && fillers <= 1;
 }
 
 export async function getSetting(env, key, fallback = null) {
@@ -71,19 +77,38 @@ async function sendFresh(env, chatId, text, replyTo = null) {
 
 // کش پاسخ: کلید = نام دستور + روز + هش متن. اگه متن عوض شده باشه (مثلاً تغییر شروع ترم یا شماره‌ها)، جواب تازه می‌ره.
 // اگه سؤال تکراری باشه، ربات زیر پاسخ قبلی ریپلای می‌زنه؛ اگه پیام قبلی پاک شده باشه، جواب تازه می‌ده.
-export async function sendCachedAnswer(env, chatId, baseKey, text, send) {
+// هر جواب کش‌شده در هر ۶۰ ثانیه فقط یک یادآوری متنی دارد (گروه شلوغ نشه)
+async function claimNoteSlot(env, chatId, answerMsgId) {
+  const key = `week_note:${chatId}:${answerMsgId}`;
+  const now = nowUtc();
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = ?").bind(key).first();
+  if (row && now - Number(row.value) < 60) return false;
+  await env.DB.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .bind(key, String(now)).run();
+  return true;
+}
+
+export async function sendCachedAnswer(env, chatId, baseKey, text, send, reactTo = null) {
   const key = `${baseKey}|${await shortHash(text)}`;
   const cached = await env.DB.prepare("SELECT message_id FROM week_cache WHERE key = ? AND chat_id = ?")
     .bind(key, chatId).first();
 
   if (cached) {
     try {
-      await tg(env, "sendMessage", {
-        chat_id: chatId,
-        text: "جواب این سؤال بالاتره ↑",
-        reply_to_message_id: cached.message_id,
-        allow_sending_without_reply: false,
-      });
+      // پرسش آزاد تکراری: واکنش 👀 روی خود پرسش، تا کاربر بفهمه دیده شده
+      if (reactTo) await tg(env, "setMessageReaction", { chat_id: chatId, message_id: reactTo, reaction: [{ type: "emoji", emoji: "👀" }] });
+      // یادآوری کوتاه: برای هر جواب حداکثر یکی در هر ۶۰ ثانیه، و بعد از ۶۰ ثانیه پاک می‌شه (کرون هر دقیقه)
+      if (await claimNoteSlot(env, chatId, cached.message_id)) {
+        const note = await tg(env, "sendMessage", {
+          chat_id: chatId,
+          text: "جواب بالاست ↑",
+          reply_to_message_id: cached.message_id,
+          allow_sending_without_reply: false,
+        });
+        await env.DB.prepare(
+          "INSERT INTO metro_messages (chat_id, message_id, delete_at_utc) VALUES (?, ?, ?) ON CONFLICT(chat_id, message_id) DO UPDATE SET delete_at_utc = excluded.delete_at_utc"
+        ).bind(chatId, note.message_id, nowUtc() + 60).run();
+      }
       return;
     } catch {
       // پیام اصلی پاک شده یا در دسترس نیست: جواب تازه می‌دیم
@@ -107,5 +132,5 @@ export async function answerPublic(env, chatId, cmd, replyTo = null) {
   const startIso = await getSetting(env, "semester_start", "2026-09-12");
   const today = tehranToday();
   const text = buildAnswer(cmd, startIso, today);
-  return sendCachedAnswer(env, chatId, `${cmd}|${today}`, text, () => sendFresh(env, chatId, text, replyTo));
+  return sendCachedAnswer(env, chatId, `${cmd}|${today}`, text, () => sendFresh(env, chatId, text, replyTo), replyTo);
 }
