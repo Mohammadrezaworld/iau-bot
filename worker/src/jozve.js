@@ -72,6 +72,109 @@ function mediaOf(post) {
   return null;
 }
 
+// ───── تطبیق نام درس و استاد با نام‌های ثبت‌شده ─────
+// اگه کپشن دقیقاً با نام‌های ثبت‌شده بخونه، همون لحظه ثبت می‌شه. وگرنه ربات پیشنهاد نزدیک‌ترین نام را می‌دهد
+// و ادمین با دکمه تأیید می‌کنه (هیچ نام تازه‌ای بدون تأیید ساخته نمی‌شه). تأیید ادمین همیشه لازم است، پس آستانه‌ی شباهت پایین است.
+const CONFIRM_ACTION = "jozve_confirm";
+const CONFIRM_TTL_S = 3600; // درخواست تأیید یک ساعت معتبره
+const SIMILAR = 0.5;
+
+const normName = (s) => String(s || "")
+  .replace(/[‌\s]+/g, "")
+  .replace(/ي/g, "ی").replace(/ك/g, "ک")
+  .replace(/[۰-۹]/g, (d) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(d)))
+  .replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)))
+  .toLowerCase();
+
+function levenshtein(a, b) {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+// نزدیک‌ترین نام از فهرست؛ اگه شباهتش به آستانه نرسه، null
+function bestMatch(query, candidates) {
+  const x = normName(query);
+  let best = null;
+  let score = 0;
+  for (const c of candidates) {
+    const y = normName(c);
+    if (!x || !y) continue;
+    const sc = x === y ? 1 : 1 - levenshtein(x, y) / Math.max(x.length, y.length);
+    if (sc > score) { score = sc; best = c; }
+  }
+  return score >= SIMILAR ? best : null;
+}
+
+// کپشن دقیقاً با نام‌های ثبت‌شده یکی است؟ اگه بله، پیشنهاد همان کپشن است. وگرنه نزدیک‌ترین نام‌ها
+async function resolveNames(env, kind, course, professor) {
+  const table = TABLE[kind];
+  const { results: cs } = await env.DB.prepare(`SELECT DISTINCT course FROM ${table}`).all();
+  const courses = cs.map((r) => r.course);
+  const courseSug = courses.includes(course) ? course : courses.find((c) => normName(c) === normName(course)) || bestMatch(course, courses) || course;
+  const { results: ps } = await env.DB.prepare(`SELECT DISTINCT professor FROM ${table} WHERE course = ?`).bind(courseSug).all();
+  const profs = ps.map((r) => r.professor);
+  const profSug = profs.includes(professor) ? professor : profs.find((p) => normName(p) === normName(professor)) || bestMatch(professor, profs) || professor;
+  return {
+    exact: courses.includes(course) && profs.includes(professor),
+    caption: { course, professor },
+    suggested: { course: courseSug, professor: profSug },
+  };
+}
+
+async function insertRows(env, kind, names, title, members, group) {
+  for (const m of members) {
+    await env.DB.prepare(
+      `INSERT OR IGNORE INTO ${TABLE[kind]} (course, professor, title, file_name, file_size, channel_msg_id, created_utc)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).bind(names.course, names.professor, title || "", m.file_name, m.file_size, m.id, nowS()).run();
+  }
+  if (group) {
+    await env.DB.prepare(
+      "INSERT OR IGNORE INTO album_groups (media_group_id, kind, course, professor, title, created_utc) VALUES (?, ?, ?, ?, ?, ?)"
+    ).bind(group, kind, names.course, names.professor, title || "", nowS()).run();
+  }
+}
+
+// درخواست تأیید: پیام کانال با دکمه‌ها؛ فایل‌ها تا تأیید در جدول ثبت نمی‌شن
+async function askConfirm(env, chatId, kind, title, group, member, names) {
+  const payload = { kind, title: title || "", group, members: [member], caption: names.caption, suggested: names.suggested };
+  const row = await env.DB.prepare(
+    "INSERT INTO pending_actions (actor_id, action, payload, expires_utc) VALUES (0, ?, ?, ?) RETURNING id"
+  ).bind(CONFIRM_ACTION, JSON.stringify(payload), nowS() + CONFIRM_TTL_S).first();
+  const cap = names.caption;
+  const sug = names.suggested;
+  const same = sug.course === cap.course && sug.professor === cap.professor;
+  const rows = [];
+  if (!same) rows.push([{ text: `✅ ثبت با پیشنهاد`, callback_data: `jp:s:${row.id}` }]);
+  rows.push([{ text: `✍️ ثبت با همین نام`, callback_data: `jp:c:${row.id}` }]);
+  rows.push([{ text: "❌ لغو", callback_data: `jp:x:${row.id}` }]);
+  const text = `«${cap.course} — ${cap.professor}» با نام‌های ثبت‌شده فرق داره.`
+    + (same ? "\nنام تازه‌ست؛ ثبت بشه؟" : `\nپیشنهاد: ${sug.course} — ${sug.professor}`);
+  await tg(env, "sendMessage", { chat_id: chatId, text, reply_markup: { inline_keyboard: rows } });
+}
+
+// فایل آلبومی که کپشن ندارد: اگه درخواست تأیید همان آلبوم باز است، به آن اضافه می‌شود
+async function joinPendingAlbum(env, post, media) {
+  const g = String(post.media_group_id);
+  const { results } = await env.DB.prepare("SELECT id, payload FROM pending_actions WHERE action = ? AND expires_utc > ?")
+    .bind(CONFIRM_ACTION, nowS()).all();
+  for (const r of results) {
+    const p = JSON.parse(r.payload);
+    if (p.group !== g) continue;
+    p.members.push({ id: post.message_id, file_name: media.file_name, file_size: media.file_size });
+    await env.DB.prepare("UPDATE pending_actions SET payload = ? WHERE id = ?").bind(JSON.stringify(p), r.id).run();
+    return true;
+  }
+  return false;
+}
+
 // پست جدید کانال خصوصی
 export async function handleJozvePost(env, post) {
   if (String(post.chat.id) !== String(env.JOZVE_CHANNEL)) return;
@@ -80,31 +183,50 @@ export async function handleJozvePost(env, post) {
 
   // آلبوم: کپشن فقط روی فایل اول است؛ بقیه با مشخصات همون آلبوم (album_groups) ثبت می‌شن
   const group = post.media_group_id ? String(post.media_group_id) : "";
-  let parsed;
+  const member = { id: post.message_id, file_name: media.file_name, file_size: media.file_size };
   if (!post.caption && group) {
     const rec = await env.DB.prepare("SELECT kind, course, professor, title FROM album_groups WHERE media_group_id = ?").bind(group).first();
-    parsed = rec ? rec : { error: "این فایل آلبوم کپشن نداره؛ کپشن باید روی اولین فایل آلبوم باشه." };
-  } else {
-    parsed = parseCaption(post.caption);
+    if (!rec) {
+      if (await joinPendingAlbum(env, post, media)) return;
+      return sendMessage(env, post.chat.id, "ثبت نشد. این فایل آلبوم کپشن نداره؛ کپشن باید روی اولین فایل آلبوم باشه.");
+    }
+    await insertRows(env, rec.kind, rec, rec.title, [member], null);
+    return;
   }
+
+  const parsed = parseCaption(post.caption);
   if (parsed.error) {
     return sendMessage(env, post.chat.id, `ثبت نشد. ${parsed.error}`);
   }
-
-  await env.DB.prepare(
-    `INSERT OR IGNORE INTO ${TABLE[parsed.kind]} (course, professor, title, file_name, file_size, channel_msg_id, created_utc)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).bind(parsed.course, parsed.professor, parsed.title || "", media.file_name, media.file_size, post.message_id, nowS()).run();
-  if (group && post.caption) {
-    await env.DB.prepare(
-      "INSERT OR IGNORE INTO album_groups (media_group_id, kind, course, professor, title, created_utc) VALUES (?, ?, ?, ?, ?, ?)"
-    ).bind(group, parsed.kind, parsed.course, parsed.professor, parsed.title || "", nowS()).run();
+  const names = await resolveNames(env, parsed.kind, parsed.course, parsed.professor);
+  if (!names.exact) {
+    return askConfirm(env, post.chat.id, parsed.kind, parsed.title, group, member, names);
   }
-  // اعضای آلبوم بدون کپشن بی‌صدا ثبت می‌شن؛ فقط یک تأیید برای هر آلبوم فرستاده می‌شه
-  if (!post.caption) return;
+  await insertRows(env, parsed.kind, names.caption, parsed.title, [member], group);
   const text = `ثبت شد (${LABEL[parsed.kind]}${group ? "، آلبوم" : ""}): ${parsed.course} — ${parsed.professor}`;
   const sent = await tg(env, "sendMessage", { chat_id: post.chat.id, text, disable_web_page_preview: true });
   await rememberMsg(env, post.chat.id, sent.message_id, CONFIRM_TTL);
+}
+
+// دکمه‌های درخواست تأیید (jp:s = پیشنهاد، jp:c = همین نام، jp:x = لغو). فقط ادمین‌ها
+export async function handleJozvePickCallback(env, cq) {
+  const chatId = cq.message.chat.id;
+  const answer = (text = "") => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text });
+  if (String(chatId) !== String(env.JOZVE_CHANNEL)) return answer();
+  if (!(await isAdmin(env, cq.from.id))) return answer("فقط ادمین‌ها");
+  const [, action, idStr] = String(cq.data || "").split(":");
+  const row = await env.DB.prepare("SELECT * FROM pending_actions WHERE id = ? AND action = ?").bind(Number(idStr), CONFIRM_ACTION).first();
+  await tryDeleteMessage(env, chatId, cq.message.message_id);
+  if (!row || row.expires_utc < nowS()) return answer("این درخواست منقضی شده");
+  await env.DB.prepare("DELETE FROM pending_actions WHERE id = ?").bind(row.id).run();
+  if (action === "x") return answer("لغو شد");
+  const p = JSON.parse(row.payload);
+  const names = action === "s" ? p.suggested : p.caption;
+  await insertRows(env, p.kind, names, p.title, p.members, p.group);
+  const text = `ثبت شد (${LABEL[p.kind]}${p.group ? "، آلبوم" : ""}): ${names.course} — ${names.professor}`;
+  const sent = await tg(env, "sendMessage", { chat_id: chatId, text, disable_web_page_preview: true });
+  await rememberMsg(env, chatId, sent.message_id, CONFIRM_TTL);
+  return answer("ثبت شد");
 }
 
 async function rememberMsg(env, chatId, msgId, ttl = RESULT_TTL) {
