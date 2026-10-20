@@ -20,7 +20,7 @@ JOZVE_PUBLIC_USERNAME = ""
 GROUP_JOIN_LINK = ""
 
 [triggers]
-crons = []
+crons = ["* * * * *"]
 
 [observability]
 enabled = true
