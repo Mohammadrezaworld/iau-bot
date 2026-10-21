@@ -77,12 +77,13 @@ async function sendFresh(env, chatId, text, replyTo = null) {
 
 // کش پاسخ: کلید = نام دستور + روز + هش متن. اگه متن عوض شده باشه (مثلاً تغییر شروع ترم یا شماره‌ها)، جواب تازه می‌ره.
 // اگه سؤال تکراری باشه، ربات زیر پاسخ قبلی ریپلای می‌زنه؛ اگه پیام قبلی پاک شده باشه، جواب تازه می‌ده.
-// هر جواب کش‌شده در هر ۶۰ ثانیه فقط یک یادآوری متنی دارد (گروه شلوغ نشه)
+// یادآوری «جواب بالاست» ۳ دقیقه می‌ماند تا کاربر جواب را بگیرد؛ هر جواب در این مدت فقط یک یادآوری متنی دارد (گروه شلوغ نشه)
+const NOTE_TTL = 180;
 async function claimNoteSlot(env, chatId, answerMsgId) {
   const key = `week_note:${chatId}:${answerMsgId}`;
   const now = nowUtc();
   const row = await env.DB.prepare("SELECT value FROM settings WHERE key = ?").bind(key).first();
-  if (row && now - Number(row.value) < 60) return false;
+  if (row && now - Number(row.value) < NOTE_TTL) return false;
   await env.DB.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
     .bind(key, String(now)).run();
   return true;
@@ -97,7 +98,7 @@ export async function sendCachedAnswer(env, chatId, baseKey, text, send, reactTo
     try {
       // پرسش آزاد تکراری: واکنش 👀 روی خود پرسش، تا کاربر بفهمه دیده شده
       if (reactTo) await tg(env, "setMessageReaction", { chat_id: chatId, message_id: reactTo, reaction: [{ type: "emoji", emoji: "👀" }] });
-      // یادآوری کوتاه: برای هر جواب حداکثر یکی در هر ۶۰ ثانیه، و بعد از ۶۰ ثانیه پاک می‌شه (کرون هر دقیقه)
+      // یادآوری کوتاه: برای هر جواب حداکثر یکی در هر NOTE_TTL، و بعد از آن پاک می‌شه (کرون هر دقیقه)
       if (await claimNoteSlot(env, chatId, cached.message_id)) {
         const note = await tg(env, "sendMessage", {
           chat_id: chatId,
@@ -107,7 +108,7 @@ export async function sendCachedAnswer(env, chatId, baseKey, text, send, reactTo
         });
         await env.DB.prepare(
           "INSERT INTO metro_messages (chat_id, message_id, delete_at_utc) VALUES (?, ?, ?) ON CONFLICT(chat_id, message_id) DO UPDATE SET delete_at_utc = excluded.delete_at_utc"
-        ).bind(chatId, note.message_id, nowUtc() + 60).run();
+        ).bind(chatId, note.message_id, nowUtc() + NOTE_TTL).run();
       }
       return;
     } catch {
