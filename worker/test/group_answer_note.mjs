@@ -1,4 +1,4 @@
-// پاسخ تکراری /week: یادآوری «جواب بالاست» بعد از ۳ دقیقه پاک می‌شه
+// پاسخ تکراری /week: یادآوری «جواب بالاست» بعد از ۲۰ دقیقه پاک می‌شه
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "fs";
 import { fileURLToPath as __ftp } from "node:url";
@@ -34,17 +34,17 @@ const note = sent.find((x) => x.m === "sendMessage" && /بالاست/.test(x.tex
 ok("duplicate /week gets the 'above' note as a reply", !!note && !!note.reply_to_message_id);
 const noteId = note && note._id;
 const row = note && raw.prepare("SELECT delete_at_utc AS d FROM metro_messages WHERE chat_id = -100555 AND message_id = ?").get(noteId);
-ok("note is scheduled for deletion ~180s later", row && Math.abs(row.d - (Math.floor(base / 1000) + 180)) <= 3);
+ok("note is scheduled for deletion ~1200s later", row && Math.abs(row.d - (Math.floor(base / 1000) + 1200)) <= 3);
 
 // ۶۱ ثانیه بعد: کرون پاک‌سازی باید یادآوری را حذف کند
-Date.now = () => base + 181000;
+Date.now = () => base + 1210000;
 sent.length = 0;
 await cleanupMetroMessages(env);
-ok("note is deleted by the minute cleanup after 180s", !!note && sent.some((x) => x.m === "deleteMessage" && x.message_id === noteId));
+ok("note is deleted by the minute cleanup after 1200s", !!note && sent.some((x) => x.m === "deleteMessage" && x.message_id === noteId));
 Date.now = () => base;
 
 // پرسش آزاد تکراری: واکنش 👀 روی پرسش + یادآوری کوتاه، حداکثر یکی در هر ۶۰ ثانیه
-Date.now = () => base + 400000;
+Date.now = () => base + 1300000;
 const q = "دوستان هفته زوجیم یا فرد؟";
 // اولین پرسش تکراری: واکنش روی پرسش + یادآوری کوتاه
 sent.length = 0;
@@ -58,13 +58,13 @@ ok("question message is not deleted", !sent.some((x) => x.m === "deleteMessage" 
 // دومین پرسش تکراری در همان ۶۰ ثانیه: فقط واکنش، بدون یادآوری تازه
 sent.length = 0;
 await g(206, q, 6013);
-ok("second duplicate within 180s gets reaction only", sent.some((x) => x.m === "setMessageReaction" && x.message_id === 6013) && !sent.some((x) => x.m === "sendMessage"));
+ok("second duplicate within 1200s gets reaction only", sent.some((x) => x.m === "setMessageReaction" && x.message_id === 6013) && !sent.some((x) => x.m === "sendMessage"));
 
 // بعد از ۶۰ ثانیه: یادآوری دوباره مجاز است
-Date.now = () => base + 600000;
+Date.now = () => base + 2510000;
 sent.length = 0;
 await g(207, q, 6014);
-ok("after 180s a new duplicate gets the note again", sent.some((x) => x.m === "sendMessage" && /بالاست/.test(x.text || "")));
+ok("after 1200s a new duplicate gets the note again", sent.some((x) => x.m === "sendMessage" && /بالاست/.test(x.text || "")));
 
 // واکنش شکست بخورد: جواب تازه داده می‌شود (کاربر بی‌جواب نمی‌ماند)
 failReaction = true;

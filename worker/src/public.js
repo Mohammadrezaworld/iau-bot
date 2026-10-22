@@ -78,7 +78,7 @@ async function sendFresh(env, chatId, text, replyTo = null) {
 // کش پاسخ: کلید = نام دستور + روز + هش متن. اگه متن عوض شده باشه (مثلاً تغییر شروع ترم یا شماره‌ها)، جواب تازه می‌ره.
 // اگه سؤال تکراری باشه، ربات زیر پاسخ قبلی ریپلای می‌زنه؛ اگه پیام قبلی پاک شده باشه، جواب تازه می‌ده.
 // یادآوری «جواب بالاست» ۳ دقیقه می‌ماند تا کاربر جواب را بگیرد؛ هر جواب در این مدت فقط یک یادآوری متنی دارد (گروه شلوغ نشه)
-const NOTE_TTL = 180;
+const NOTE_TTL = 1200; // ۲۰ دقیقه: هر کس در این مدت بپرسه جواب را می‌بیند
 async function claimNoteSlot(env, chatId, answerMsgId) {
   const key = `week_note:${chatId}:${answerMsgId}`;
   const now = nowUtc();
