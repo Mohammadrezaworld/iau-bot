@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "fs";
 import { fileURLToPath as __ftp } from "node:url";
 const WORKER = __ftp(new URL("..", import.meta.url));
-const { sendReminders } = await import(WORKER + "src/reminders.js");
+const { processReminders } = await import(WORKER + "src/reminders.js");
 const { handleMetroUploadCallback } = await import(WORKER + "src/metro.js");
 const raw = new DatabaseSync(":memory:");
 raw.exec(readFileSync(WORKER + "schema.sql", "utf8"));
@@ -22,17 +22,18 @@ raw.exec("INSERT INTO settings (key,value) VALUES ('group_id','-100555'),('quiet
 raw.exec("INSERT INTO events (start_date,end_date,title,kind,archived) VALUES ('2026-10-17','2026-10-17','امتحان','',0)");
 const reminderLogged = () => raw.prepare("SELECT COUNT(*) AS n FROM reminder_log").get().n;
 
-// ۱. D2: ساعت ۰۳ (سکوت) → نه ارسال، نه ثبت
+// ۱. D2: ساعت ۰۳ (سکوت) → نه پرسش از مالک، نه ثبت
 at(3); sent.length = 0;
-await sendReminders(env, "30 2 * * *");
-ok("D2: no reminder sent during quiet hours", sent.filter((x) => x.m === "sendMessage").length === 0);
-ok("D2: nothing logged during quiet hours (so next run can send)", reminderLogged() === 0);
+await processReminders(env);
+ok("D2: no reminder asked during quiet hours", sent.filter((x) => x.m === "sendMessage").length === 0);
+ok("D2: nothing logged during quiet hours (so next run can ask)", reminderLogged() === 0);
 
-// ۲. D2: ساعت ۱۲ (بیرون از سکوت) → ارسال و ثبت
+// ۲. D2: ساعت ۱۲ (بیرون از سکوت) → پرسش از مالک (نه مستقیم به گروه) و ثبت
 at(12); sent.length = 0;
-await sendReminders(env, "30 2 * * *");
-ok("D2: reminder sent outside quiet hours", sent.some((x) => x.m === "sendMessage" && /امتحان/.test(x.text || "")));
-ok("D2: reminder logged after sending", reminderLogged() === 1);
+await processReminders(env);
+ok("D2: reminder asked to the owner outside quiet hours", sent.some((x) => x.m === "sendMessage" && String(x.chat_id) === "5" && /امتحان/.test(x.text || "")));
+ok("D2: nothing sent directly to the group", !sent.some((x) => String(x.chat_id) === "-100555"));
+ok("D2: asked reminder logged (no repeat ask)", raw.prepare("SELECT 1 FROM reminder_log WHERE kind = 'now'").get() !== undefined);
 
 // ۳. B1: تأیید آپلود مترو
 const pending = (actor) => {

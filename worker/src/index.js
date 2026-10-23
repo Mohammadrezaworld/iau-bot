@@ -3,7 +3,7 @@ import { webhookSecret, tryDeleteMessage } from "./telegram.js";
 import { handleAdminMessage, handleDmUser, parseCmd, PUBLIC_CMDS, runPublic } from "./commands.js";
 import { getSetting, isParityQuestion } from "./public.js";
 import { tehranToday } from "./calendar.js";
-import { sendReminders } from "./reminders.js";
+import { processReminders, handleReminderCallback } from "./reminders.js";
 import { handleCallback } from "./wizard.js";
 import { handleKeywordCallback } from "./keywords.js";
 import { handleHolidayCallback } from "./holidays.js";
@@ -225,6 +225,8 @@ async function dispatchUpdate(env, update, ctx = null) {
       }
       return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
     }
+    // یادآوری رویداد: فقط مالک؛ ارسال به گروه با تأیید او
+    if (data.startsWith("rm2:")) return handleReminderCallback(env, cq);
     if (!cq.message || !cq.message.chat) return;
     if (data.startsWith("d:") && cq.message.chat.type === "private") {
       // منوی شخصی جزوه‌ها در پیوی (کاربر عادی و ادمین)
@@ -435,7 +437,7 @@ export default {
           if (event.cron === "* * * * *") {
             // هر دقیقه: پاک‌کردن پیام‌های موقت /metro، بررسی سلامت اسکرپ‌ها و گزارش روزانه.
             // هرکدوم جدا اجرا می‌شه تا خطای یکی، بقیه رو نبره.
-            const tasks = { metro: cleanupMetroMessages, health: checkScrapeHealth, summary: sendDailySummary, batches: expireBatches, parity: announceParity };
+            const tasks = { metro: cleanupMetroMessages, health: checkScrapeHealth, summary: sendDailySummary, batches: expireBatches, parity: announceParity, reminders: processReminders };
             const names = Object.keys(tasks);
             const results = await Promise.allSettled(names.map((name) => tasks[name](env)));
             results.forEach((r, i) => {
@@ -450,8 +452,6 @@ export default {
           } else if (event.cron === "30 20 * * *") {
             const backup = await buildBackup(env);
             await sendJsonDocument(env, env.OWNER_ID, "iaut-backup.json", backup, "پشتیبان روزانه");
-          } else {
-            await sendReminders(env, event.cron);
           }
         } catch (err) {
           const msg = err && err.message ? err.message : "unknown";
