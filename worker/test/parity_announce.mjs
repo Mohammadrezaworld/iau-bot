@@ -27,6 +27,7 @@ const first = await announceParity(env, at(2026, 10, 23, 23, 30));
 ok("Fri 23:30 Tehran: announced once", first === true && sent.filter((x) => x.m === "sendMessage").length === 1);
 ok("announcement goes to the group", sent[0] && String(sent[0].chat_id) === "-100555");
 ok("announcement says next week is فرد (week 7)", sent[0] && sent[0].text.includes("فرد") && !sent[0].text.includes("زوج"));
+ok("announcement uses «هفته‌ی پیش رو» and the #یادآوری hashtag", sent[0] && sent[0].text.includes("هفته‌ی پیش رو") && sent[0].text.includes("#یادآوری") && !sent[0].text.includes("آینده"));
 ok("announcement contains the next week's date range", sent[0] && /شنبه/.test(sent[0].text) && /جمعه/.test(sent[0].text));
 ok("sent week is stored", raw.prepare("SELECT value FROM settings WHERE key = ?").get(ANNOUNCE_KEY)?.value === "7");
 
