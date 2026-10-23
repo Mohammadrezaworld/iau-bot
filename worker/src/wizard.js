@@ -39,7 +39,7 @@ const kindButtons = () => ({
 });
 
 const skipButton = { inline_keyboard: [[{ text: "یک روزه / بدون یادداشت", callback_data: "w:skip" }]] };
-const confirmButtons = { inline_keyboard: [[{ text: "ثبت", callback_data: "w:ok" }, { text: "لغو", callback_data: "w:cancel" }]] };
+const confirmButtons = { inline_keyboard: [[{ text: "ثبت", callback_data: "w:ok" }, { text: "لغو", callback_data: "w:stop" }]] };
 
 async function getSession(env, userId) {
   return env.DB.prepare("SELECT * FROM admin_sessions WHERE user_id = ?").bind(userId).first();
@@ -174,7 +174,7 @@ async function handleEditText(env, message, sess, text) {
   return true;
 }
 
-// دکمه‌ها: w:skip, w:kind:<k>, w:ok, w:cancel، دسته: w:cat:<نام>، ویرایش: ed:p:<type>:<id> و ed:f:<type>:<id>:<field>
+// دکمه‌ها: w:skip, w:kind:<k>, w:ok, w:stop (لغوِ ویزارد)، w:cancel (لغوِ عمومی بدون جلسه)، دسته: w:cat:<نام>، ویرایش: ed:p:<type>:<id> و ed:f:<type>:<id>:<field>
 // و حذف: rm:<type>:<id> و rmy:<type>:<id>
 export async function handleCallback(env, cq) {
   const userId = cq.from.id;
@@ -206,7 +206,7 @@ export async function handleCallback(env, cq) {
       return tg(env, "sendMessage", {
         chat_id: chatId,
         text: `مقدار جدید «${EDIT_FIELDS[type][field][0]}» رو بفرست${field === "note" ? " (یا «بدون یادداشت»)" : ""}.`,
-        reply_markup: { inline_keyboard: [[{ text: "لغو", callback_data: "w:cancel" }]] },
+        reply_markup: { inline_keyboard: [[{ text: "لغو", callback_data: "w:stop" }]] },
       });
     }
     return answer();
@@ -255,6 +255,13 @@ export async function handleCallback(env, cq) {
   }
 
   const sess = await getSession(env, userId);
+  // دکمه‌ی لغوِ خود ویزارد: اگر جلسه‌ای نیست (دکمه‌ی قدیمی)، همان پیام «دیگه فعال نیست» را می‌دهد
+  if (data === "w:stop") {
+    if (!sess) return answer("این جریان دیگه فعال نیست");
+    await clearSession(env, userId);
+    await answer();
+    return tg(env, "sendMessage", { chat_id: chatId, text: "لغو شد." });
+  }
   if (data === "w:cancel") {
     await clearSession(env, userId);
     await answer();

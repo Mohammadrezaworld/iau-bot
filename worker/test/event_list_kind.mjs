@@ -1,0 +1,20 @@
+// لیست رویدادهای ادمین: نوع فقط وقتی نشان داده شود که با عنوان فرق دارد
+import { DatabaseSync } from "node:sqlite";
+import { readFileSync } from "fs";
+import { fileURLToPath as __ftp } from "node:url";
+const WORKER = __ftp(new URL("..", import.meta.url));
+const { listEvents } = await import(WORKER + "src/manage.js");
+const raw = new DatabaseSync(":memory:");
+raw.exec(readFileSync(WORKER + "schema.sql", "utf8"));
+const db = { prepare(sql) { const st = raw.prepare(sql); return { all: async () => ({ results: st.all() }), first: async () => st.get() ?? null, bind: () => ({ all: async () => ({ results: st.all() }) }) }; } };
+const env = { DB: db };
+let fails = 0; const ok = (n, c) => { console.log((c ? "PASS " : "FAIL ") + n); if (!c) fails++; };
+const ins = (title, kind) => raw.prepare("INSERT INTO events (title, start_date, end_date, kind) VALUES (?, '2026-10-31', '2026-11-05', ?)").run(title, kind);
+ins("میان ترم", "میان‌ترم");
+ins("امتحان فیزیک", "امتحان");
+const text = await listEvents(env);
+const lines = text.split("\n");
+ok("same title and kind (ZWNJ ignored): kind not repeated", lines[0].endsWith("| میان ترم") && !lines[0].includes("("));
+ok("different kind is shown", lines[1].endsWith("| امتحان فیزیک (امتحان)"));
+ok("id stays in the list", /^\d+ \| /.test(lines[0]));
+console.log(fails ? `FAILED ${fails}` : "ALL PASSED"); process.exit(fails ? 1 : 0);
