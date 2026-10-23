@@ -39,7 +39,7 @@ db.prepare = (sql) => { const st = origPrepare(sql); const b = st.bind; st.bind 
 // ---- تلگرام شبیه‌سازی‌شده
 const ok = (result) => Response.json({ ok: true, result });
 let mid = 1000;
-const G = { sent: [], photos: [], singlePhotos: [], captions: [], fail: null, quietAfterOne: false, failAt: null, dropToken: null, photoFail: null }; // fail: 'network' | 'refuse' (یک‌بار، برای پیام گروه)
+const G = { sent: [], photos: [], singlePhotos: [], ownerPhotos: [], ownerPhotoFail: false, captions: [], fail: null, quietAfterOne: false, failAt: null, dropToken: null, photoFail: null }; // fail: 'network' | 'refuse' (یک‌بار، برای پیام گروه)
 const owner = []; const answers = []; const edits = []; const alerts = [];
 globalThis.fetch = async (u, o) => {
   const method = String(u).split("/").pop();
@@ -69,6 +69,7 @@ globalThis.fetch = async (u, o) => {
     }
   }
   if (String(b.chat_id) === "5" && method === "sendMessage") { owner.push(b); return ok({ message_id: ++mid }); }
+  if (String(b.chat_id) === "5" && method === "sendPhoto") { if (G.ownerPhotoFail) { G.ownerPhotoFail = false; return Response.json({ ok: false, error_code: 400, description: "Bad Request: wrong file identifier" }, { status: 400 }); } G.ownerPhotos.push(b.photo); return ok({ message_id: ++mid }); }
   if (method === "sendMessage") return ok({ message_id: ++mid });
   return ok(true);
 };
@@ -93,7 +94,7 @@ const batchOf = (postText) => q1("SELECT bi.batch_id AS b FROM scrape_batch_item
 const unsent = () => q1("SELECT COUNT(*) AS n FROM posts WHERE sent_at_utc IS NULL").n;
 const batchState = (id) => q1("SELECT state FROM scrape_batches WHERE id = ?", id)?.state;
 const ids = (bid) => qN("SELECT post_id FROM scrape_batch_items WHERE batch_id = ?", bid).map((r) => r.post_id);
-const reset = () => { G.sent.length = 0; G.photos.length = 0; G.singlePhotos.length = 0; owner.length = 0; answers.length = 0; };
+const reset = () => { G.sent.length = 0; G.photos.length = 0; G.singlePhotos.length = 0; G.ownerPhotos.length = 0; owner.length = 0; answers.length = 0; };
 
 let fails = 0; const T = (n, c) => { console.log((c ? "PASS " : "FAIL ") + n); if (!c) fails++; };
 
@@ -476,6 +477,23 @@ await hook(cbOwner(`sb:s:${YC}`));
 T("Y6c caption: photo carries post text as caption", G.captions.includes("caption ok") && G.singlePhotos.length === 1);
 T("Y6c caption: no separate text message for that post", !G.sent.some((m) => m.text.includes("caption ok")));
 T("Y6c caption: post marked sent and batch sent", q1("SELECT sent_at_utc AS s FROM posts WHERE text = 'caption ok'").s !== null && batchState(YC) === "sent");
+
+// Y7) پیش‌نمایش مالک: عکس پست در پیوی مالک هم دیده شود، و دکمه‌ها همچنان زیر متن بیایند
+raw.exec("UPDATE posts SET sent_at_utc = 1 WHERE sent_at_utc IS NULL");
+atTehranHour(12);
+addPost("telegram:test_channel_a", "preview photo"); raw.exec("UPDATE posts SET image_url = 'https://img.example/pv.jpg' WHERE text = 'preview photo'");
+reset();
+await prepareBatch(env);
+T("Y7 preview: batch photo is shown to the owner", G.ownerPhotos.includes("https://img.example/pv.jpg"));
+T("Y7 preview: text preview with approve button still sent", owner.some((m) => m.reply_markup && JSON.stringify(m.reply_markup).includes("sb:s:")));
+
+// Y7b) عکس پیش‌نمایش خراب: متن پیش‌نمایش و دکمه‌ها همچنان می‌آیند
+raw.exec("UPDATE posts SET sent_at_utc = 1 WHERE sent_at_utc IS NULL");
+atTehranHour(12);
+addPost("telegram:test_channel_a", "preview bad photo"); raw.exec("UPDATE posts SET image_url = 'https://img.example/bad.jpg' WHERE text = 'preview bad photo'");
+reset(); G.ownerPhotoFail = true;
+await prepareBatch(env);
+T("Y7b preview photo refused: text preview with approve button still sent", owner.some((m) => m.reply_markup && JSON.stringify(m.reply_markup).includes("sb:s:")));
 
 // Y5 (F5): سکوت وسط دسته؛ واحد بعدی نمی‌رسه، باقی‌مانده برای ادامه حفظ می‌شه
 raw.exec("UPDATE posts SET sent_at_utc = 1 WHERE sent_at_utc IS NULL");
