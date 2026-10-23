@@ -3,7 +3,8 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "fs";
 import { fileURLToPath as __ftp } from "node:url";
 const WORKER = __ftp(new URL("..", import.meta.url));
-const { processReminders, handleReminderCallback } = await import(WORKER + "src/reminders.js");
+const { processReminders, handleReminderCallback, groupText } = await import(WORKER + "src/reminders.js");
+const e5Stub = { title: "تست", start_date: "2026-11-30" };
 const raw = new DatabaseSync(":memory:");
 raw.exec(readFileSync(WORKER + "schema.sql", "utf8"));
 const db = { prepare(sql) { const st = raw.prepare(sql); return { bind: (...a) => ({ first: async () => st.get(...a) ?? null, all: async () => ({ results: st.all(...a) }), run: async () => { st.run(...a); return { meta: { changes: 1 } }; } }), first: async () => st.get() ?? null, all: async () => ({ results: st.all() }), run: async () => { st.run(); return {}; } }; } };
@@ -28,7 +29,7 @@ raw.exec(`INSERT INTO reminder_log (event_id, kind) VALUES (${e6}, 'pre'), (${e6
 const tick = async (d, h, mi) => { Date.now = () => Date.UTC(...d, h - 3, mi - 30); sent.length = 0; await processReminders(env); return sent.filter((x) => x.m === "sendMessage" && String(x.chat_id) === "5"); };
 const LABEL_KIND = { "۷ روز قبل": "pre7", "یک روز قبل": "pre1", "روز رویداد": "day", "فوری (تازه ثبت شده)": "now" };
 const asked = []; // {title, kind, at}
-const record = (at, msgs) => { for (const m of msgs) { const kind = Object.entries(LABEL_KIND).find(([l]) => m.text.includes(`(${l})`))?.[1]; const title = m.text.split("— ").pop(); asked.push({ title, kind, at }); } };
+const record = (at, msgs) => { for (const m of msgs) { const kind = Object.entries(LABEL_KIND).find(([l]) => m.text.includes(`(${l})`))?.[1]; const title = m.text.split("— ").pop().split("\n")[0]; asked.push({ title, kind, at }); } };
 const Y = 2026, N = 10; // نوامبر = ماه ۱۰ در Date.UTC (صفرمایه)
 
 ids.e1 = addEvent("عادی یک", "2026-11-10", "امتحان");
@@ -64,6 +65,7 @@ ok("midterm registered the day before (after 08:00): one immediate ask only", JS
 ok("midterm registered 3 days before: 7-day reminder skipped, 1-day and day-of kept", JSON.stringify(kindsOf("میان‌ترم سه روز")) === JSON.stringify(["pre1", "day"]));
 ok("legacy event: old pre/day logs are not asked again", kindsOf("قدیمی").length === 0);
 ok("each reminder asked exactly once (no repeats)", new Set(asked.map((a) => a.title + a.kind)).size === asked.length);
+ok("reminder text ends with the #یادآوری hashtag", groupText(e5Stub, "2026-11-30").endsWith("#یادآوری"));
 ok("nothing sent to the group before owner approval", !sent.some((x) => String(x.chat_id) === "-100555"));
 
 // تأیید مالک
