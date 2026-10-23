@@ -25,7 +25,7 @@ export async function announceParity(env, now = Date.now()) {
   if (!groupId) return false;
   await tg(env, "sendMessage", {
     chat_id: groupId,
-    text: `هفته‌ی آینده (${rangeText(startIso, idx)}) ${parityOf(idx)} است.`,
+    text: `هفته‌ی پیش رو (${rangeText(startIso, idx)}) ${parityOf(idx)} است.\n#یادآوری`,
     disable_web_page_preview: true,
   });
   await env.DB.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
