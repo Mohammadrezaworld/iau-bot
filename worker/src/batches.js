@@ -140,6 +140,15 @@ async function sendPreview(env, bid, sections, count) {
   const owner = env.OWNER_ID;
   const chunks = chunkMessages(sections.flatMap((s) => s.blocks));
   await tg(env, "sendMessage", { chat_id: owner, text: `دسته‌ی ${bid}: ${count} پست جدید برای گروه. پیش‌نمایش:`, disable_web_page_preview: true });
+  // عکس‌های هر بخش، همان‌طور که در گروه می‌آید؛ خطای عکس جلوی پیش‌نمایش متنی و دکمه‌ها را نمی‌گیرد
+  for (const sec of sections) {
+    if (!sec.photos || !sec.photos.length) continue;
+    try {
+      await sendPhotos(env, owner, sec.label, sec.photos);
+    } catch (err) {
+      console.error("preview_photo_error", bid, err && err.message ? err.message : "unknown");
+    }
+  }
   const markup = { inline_keyboard: [[{ text: "ارسال به گروه", callback_data: `sb:s:${bid}` }, { text: "رد", callback_data: `sb:r:${bid}` }]] };
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i];
