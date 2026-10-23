@@ -16,6 +16,7 @@ import { isAdmin, isOwner } from "./admin.js";
 import { buildBackup } from "./admin.js";
 import { sendJsonDocument, tg } from "./telegram.js";
 import { handleMetroCallback, handleMetroUploadCallback, cleanupMetroMessages } from "./metro.js";
+import { announceParity } from "./parity_announce.js";
 import { handleScrapeReport, recordEvent, reportError, checkScrapeHealth, sendDailySummary, redact } from "./monitor.js";
 import { claimUpdate, markOutcome, markDoneWithRetry, notifyNeedsReview, retryUpdate, resolveUpdate, listReview, describeReviewRow, MAX_AUTO_ATTEMPTS, isUpdateId } from "./updates.js";
 
@@ -434,7 +435,7 @@ export default {
           if (event.cron === "* * * * *") {
             // هر دقیقه: پاک‌کردن پیام‌های موقت /metro، بررسی سلامت اسکرپ‌ها و گزارش روزانه.
             // هرکدوم جدا اجرا می‌شه تا خطای یکی، بقیه رو نبره.
-            const tasks = { metro: cleanupMetroMessages, health: checkScrapeHealth, summary: sendDailySummary, batches: expireBatches };
+            const tasks = { metro: cleanupMetroMessages, health: checkScrapeHealth, summary: sendDailySummary, batches: expireBatches, parity: announceParity };
             const names = Object.keys(tasks);
             const results = await Promise.allSettled(names.map((name) => tasks[name](env)));
             results.forEach((r, i) => {
