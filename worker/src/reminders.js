@@ -30,7 +30,7 @@ async function mark(env, eventId, kind) {
 export function groupText(e, today) {
   const diff = daysBetween(today, e.start_date);
   const when = diff <= 0 ? "امروز" : diff === 1 ? "فردا" : `${faNum(diff)} روز دیگه`;
-  return `📢 یادآوری: ${when} (${faDate(e.start_date)}) — ${e.title}`;
+  return `📢 یادآوری: ${when} (${faDate(e.start_date)}) — ${e.title}\n#یادآوری`;
 }
 
 export async function processReminders(env, now = Date.now()) {
