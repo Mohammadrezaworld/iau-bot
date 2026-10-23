@@ -53,7 +53,9 @@ export async function listResources(env) {
 export async function listEvents(env) {
   const { results } = await env.DB.prepare("SELECT * FROM events ORDER BY start_date, id").all();
   if (!results.length) return "هنوز رویدادی ثبت نشده.";
-  return results.map((e) => `${e.id} | ${faDate(e.start_date)}${e.end_date !== e.start_date ? " تا " + faDate(e.end_date) : ""} | ${e.title}${e.kind ? " (" + e.kind + ")" : ""}`).join("\n");
+  // نوع فقط وقتی نشان داده می‌شه که با عنوان فرق داره (مثلاً «میان ترم» و «میان‌ترم» یکی‌اند)
+  const same = (x, y) => String(x).replace(/[\u200c\s]/g, "") === String(y).replace(/[\u200c\s]/g, "");
+  return results.map((e) => `${e.id} | ${faDate(e.start_date)}${e.end_date !== e.start_date ? " تا " + faDate(e.end_date) : ""} | ${e.title}${e.kind && !same(e.kind, e.title) ? " (" + e.kind + ")" : ""}`).join("\n");
 }
 
 // پردازش دستورهای مدیریتی. اگه دستور مربوط به این بخش نبود، null برمی‌گردونه.
