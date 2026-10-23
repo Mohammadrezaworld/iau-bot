@@ -11,7 +11,7 @@ const nowUtc = () => Math.floor(Date.now() / 1000);
 // مثال‌ها: «زوج یا فرد؟»، «این هفته فرد هست یا زوج؟»، «این هفته زوج هست یا فرد»
 // شکل‌های محاوره‌ای («زوجه»، «فرده») به زوج و فرد برمی‌گردن. پرسش باید «؟» یا «یا» داشته باشه؛ جمله‌ی خبری («این هفته فرد هست») جواب نمی‌گیره.
 // کلمه‌های حاشیه‌ای مثل «دوستان» و «بچه‌ها» مجازند؛ شکل‌های «زوجیم/فردیم» و «زوجه/فرده» به زوج و فرد برمی‌گردن
-const PARITY_WORDS = new Set(["این", "هفته", "زوج", "فرد", "زوجه", "فرده", "زوجیم", "فردیم", "یا", "هست", "دوستان", "بچه", "سلام", "عزیزان", "همگی", "خب", "راستی", "ببخشید"]);
+const PARITY_WORDS = new Set(["فردا", "این", "هفته", "زوج", "فرد", "زوجه", "فرده", "زوجیم", "فردیم", "یا", "هست", "دوستان", "بچه", "سلام", "عزیزان", "همگی", "خب", "راستی", "ببخشید"]);
 // کلمه‌های حاشیه‌ای (سلام، دوستان…). در سؤالی که «هفته» ندارد حداکثر یکی مجاز است، تا «سلام دوستان زوج یا فرد؟» که شاید درباره‌ی هفته نیست جواب نگیرد.
 const FILLER_WORDS = new Set(["دوستان", "بچه", "سلام", "عزیزان", "همگی", "خب", "راستی", "ببخشید"]);
 const PARITY_FORM = { زوجه: "زوج", فرده: "فرد", زوجیم: "زوج", فردیم: "فرد" };
@@ -129,9 +129,12 @@ async function shortHash(text) {
   return [...new Uint8Array(buf)].slice(0, 8).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-export async function answerPublic(env, chatId, cmd, replyTo = null) {
+// پرسش «فردا…»: هفته‌ای که فردا در آنه (وسط هفته همان هفته‌ی جاریه؛ جمعه‌شب هفته‌ی بعد)
+export const asksTomorrow = (text) => /(?:^|\s)فردا(?=\s|$|[؟?!.،,])/.test(String(text || "").replace(/\u200c/g, " "));
+
+export async function answerPublic(env, chatId, cmd, replyTo = null, dayOffset = 0) {
   const startIso = await getSetting(env, "semester_start", "2026-09-12");
-  const today = tehranToday();
-  const text = buildAnswer(cmd, startIso, today);
-  return sendCachedAnswer(env, chatId, `${cmd}|${today}`, text, () => sendFresh(env, chatId, text, replyTo), replyTo);
+  const target = dayOffset ? addDays(tehranToday(), dayOffset) : tehranToday();
+  const text = buildAnswer(cmd, startIso, target);
+  return sendCachedAnswer(env, chatId, `${cmd}|${target}`, text, () => sendFresh(env, chatId, text, replyTo), replyTo);
 }
