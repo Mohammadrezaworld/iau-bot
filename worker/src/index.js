@@ -1,7 +1,7 @@
 // Worker: webhook تلگرام، دریافت پست‌های اسکرپ‌شده (/ingest)، پشتیبان روزانه.
 import { webhookSecret, tryDeleteMessage } from "./telegram.js";
 import { handleAdminMessage, handleDmUser, parseCmd, PUBLIC_CMDS, runPublic } from "./commands.js";
-import { getSetting, isParityQuestion } from "./public.js";
+import { getSetting, isParityQuestion, asksTomorrow } from "./public.js";
 import { tehranToday } from "./calendar.js";
 import { processReminders, handleReminderCallback } from "./reminders.js";
 import { handleCallback } from "./wizard.js";
@@ -189,7 +189,7 @@ async function handleGroupMessage(env, msg) {
     ).bind(userId, nowS).run();
   }
   // پرسش آزاد: جواب زیر خود پرسش (ریپلای) می‌آید تا معلوم باشه جواب مال کدوم پیامه
-  await runPublic(env, msg.chat.id, cmd, isQuestion ? msg.message_id : null);
+  await runPublic(env, msg.chat.id, cmd, isQuestion ? msg.message_id : null, isQuestion && asksTomorrow(msg.text) ? 1 : 0);
   if (!isQuestion) await tryDeleteMessage(env, msg.chat.id, msg.message_id);
 }
 
