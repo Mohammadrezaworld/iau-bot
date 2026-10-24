@@ -494,6 +494,7 @@ addPost("telegram:test_channel_a", "preview bad photo"); raw.exec("UPDATE posts 
 reset(); G.ownerPhotoFail = true;
 await prepareBatch(env);
 T("Y7b preview photo refused: text preview with approve button still sent", owner.some((m) => m.reply_markup && JSON.stringify(m.reply_markup).includes("sb:s:")));
+T("Y7b preview photo refused: owner gets a note naming the section and the reason", owner.some((m) => (m.text || "").startsWith("عکس «") && (m.text || "").includes("نرسید: ")));
 
 // Y5 (F5): سکوت وسط دسته؛ واحد بعدی نمی‌رسه، باقی‌مانده برای ادامه حفظ می‌شه
 raw.exec("UPDATE posts SET sent_at_utc = 1 WHERE sent_at_utc IS NULL");
