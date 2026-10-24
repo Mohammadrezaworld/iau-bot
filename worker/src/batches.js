@@ -146,7 +146,9 @@ async function sendPreview(env, bid, sections, count) {
     try {
       await sendPhotos(env, owner, sec.label, sec.photos);
     } catch (err) {
-      console.error("preview_photo_error", bid, err && err.message ? err.message : "unknown");
+      const reason = err && err.message ? err.message.slice(0, 120) : "unknown";
+      console.error("preview_photo_error", bid, reason);
+      await tg(env, "sendMessage", { chat_id: owner, text: `عکس «${sec.label}» نرسید: ${reason}`, disable_web_page_preview: true }).catch(() => {});
     }
   }
   const markup = { inline_keyboard: [[{ text: "ارسال به گروه", callback_data: `sb:s:${bid}` }, { text: "رد", callback_data: `sb:r:${bid}` }]] };

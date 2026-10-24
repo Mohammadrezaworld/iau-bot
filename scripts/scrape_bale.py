@@ -105,6 +105,7 @@ EXTRACT_V2_JS = r"""
     const text = (n.innerText || "").trim();
     if (!text) continue;
     const images = Array.from(n.querySelectorAll("img"))
+      .filter((i) => Math.max(i.naturalWidth, i.width) >= 200)
       .map((i) => i.currentSrc || i.src || "")
       .filter((u) => u && !u.startsWith("data:"));
     out.push({ sid: n.getAttribute("data-sid") || "", date: currentDate, text, images });
