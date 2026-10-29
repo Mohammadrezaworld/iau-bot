@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS scrape_runs (
   new_count   INTEGER NOT NULL DEFAULT 0,
   ok          INTEGER NOT NULL DEFAULT 1
 );
+-- sourceStatus هر دقیقه: MAX(ran_at_utc) WHERE source=? AND ok=1
+CREATE INDEX IF NOT EXISTS scrape_runs_source_ok ON scrape_runs (source, ok, ran_at_utc);
 
 -- رویدادهای پایش اسکرپ: kind = 'error' | 'health' | 'delivered' (برای /scrape_log و گزارش روزانه)
 CREATE TABLE IF NOT EXISTS scrape_events (
@@ -150,6 +152,8 @@ CREATE TABLE IF NOT EXISTS scrape_batches (
   created_utc INTEGER NOT NULL,
   expires_utc INTEGER NOT NULL
 );
+-- expireBatches هر دقیقه: pending های منقضی
+CREATE INDEX IF NOT EXISTS scrape_batches_state_expires ON scrape_batches (state, expires_utc);
 -- عضویت پست در دسته (post_id یکتاست؛ هر پست فقط یک دسته). unit: کلید بخش ارسال (برای بررسی و retry)
 CREATE TABLE IF NOT EXISTS scrape_batch_items (
   post_id  INTEGER PRIMARY KEY,
@@ -349,6 +353,8 @@ CREATE TABLE IF NOT EXISTS update_queue (
 );
 CREATE INDEX IF NOT EXISTS update_queue_at ON update_queue (at_utc);
 CREATE INDEX IF NOT EXISTS update_queue_state ON update_queue (state);
+-- DELETE قبل از هر update: حذف done های قدیمی بدون اسکن کل صف
+CREATE INDEX IF NOT EXISTS update_queue_state_at ON update_queue (state, at_utc);
 
 -- اثرهای ثبت‌شده (DB و ارسال بیرونی). کلید عملیات پایدار است؛ intent یعنی نتیجه نامشخص.
 CREATE TABLE IF NOT EXISTS effects (
