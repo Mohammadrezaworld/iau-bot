@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS posts (
   UNIQUE (source, channel, post_id)
 );
 CREATE INDEX IF NOT EXISTS posts_sent_at ON posts (sent_at_utc);
+-- ingest: آخرین پست‌های یک کانال بدون خواندن کل کانال (ORDER BY id DESC LIMIT 400)
+CREATE INDEX IF NOT EXISTS posts_src_chan_id ON posts (source, channel, id);
 
 -- سوابق اجرای اسکرپ (برای /updates و هشدار خطا)
 CREATE TABLE IF NOT EXISTS scrape_runs (
