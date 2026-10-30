@@ -185,6 +185,9 @@ def fetch_channel(page, channel: str) -> list[dict]:
     load_lazy_images(page)
     # اول ساختار جدید (با data-sid و تاریخ)؛ اگه نبود، ساختار قبلی
     posts = posts_from_v2(page.evaluate(EXTRACT_V2_JS), channel)
+    print(json.dumps({"channel": channel, "imgs": page.evaluate(
+        "() => Array.from(document.querySelectorAll('[class*=\"MessageItem_messageWrapper\"]')).slice(-20)"
+        ".map((c) => Array.from(c.querySelectorAll('img')).map((i) => [i.src.slice(0, 12), i.naturalWidth, i.width, i.complete]))")}))
     print(json.dumps({"channel": channel, "posts": len(posts), "with_image": sum(1 for p in posts if p["image_url"])}))
     if posts:
         return posts
