@@ -162,7 +162,7 @@ def posts_from_v2(cards: list[dict], channel: str) -> list[dict]:
 
 # فید بله lazy است: تا وقتی کارت به دید نیاد، عکسش placeholder (data:) است. فقط چند کارت آخر (جدیدترین‌ها) رو می‌آریم.
 LAZY_CARDS = 20
-LAZY_WAIT_MS = 4_000
+LAZY_WAIT_MS = 10_000
 IMG_LOADED_JS = "(el) => { const i = el.querySelector('img'); return !i || (!i.src.startsWith('data:') && i.complete && i.naturalWidth > 0); }"
 
 
