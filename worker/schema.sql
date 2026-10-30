@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS scrape_runs (
 );
 -- sourceStatus هر دقیقه: MAX(ran_at_utc) WHERE source=? AND ok=1
 CREATE INDEX IF NOT EXISTS scrape_runs_source_ok ON scrape_runs (source, ok, ran_at_utc);
+-- بررسی «اولین اجرای کانال» در ingest: COUNT(*) WHERE source=? AND channel=?
+CREATE INDEX IF NOT EXISTS scrape_runs_source_channel ON scrape_runs (source, channel);
 
 -- رویدادهای پایش اسکرپ: kind = 'error' | 'health' | 'delivered' (برای /scrape_log و گزارش روزانه)
 CREATE TABLE IF NOT EXISTS scrape_events (
