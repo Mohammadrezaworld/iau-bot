@@ -15,4 +15,6 @@ const mx = plan("SELECT MAX(ran_at_utc) AS t FROM scrape_runs WHERE source = ? A
 ok("sourceStatus MAX uses scrape_runs_source_ok", mx.includes("scrape_runs_source_ok") && !mx.includes("SCAN"));
 const ex = plan("SELECT id FROM scrape_batches WHERE state = 'pending' AND expires_utc < ?", 1);
 ok("expireBatches uses scrape_batches_state_expires", ex.includes("scrape_batches_state_expires") && !ex.includes("SCAN"));
+const cnt = plan("SELECT COUNT(*) AS n FROM scrape_runs WHERE source = ? AND channel = ?", "bale", "x");
+ok("ingest first-run COUNT uses scrape_runs_source_channel", cnt.includes("scrape_runs_source_channel") && !cnt.includes("SCAN"));
 console.log(fails ? `FAILED ${fails}` : "ALL PASSED"); process.exit(fails ? 1 : 0);
