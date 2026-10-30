@@ -10,6 +10,7 @@ import sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from playwright.sync_api import TimeoutError as PWTimeout
 from playwright.sync_api import sync_playwright
 
 from quiet import in_quiet_hours
@@ -159,11 +160,29 @@ def posts_from_v2(cards: list[dict], channel: str) -> list[dict]:
     return posts
 
 
+# فید بله lazy است: تا وقتی کارت به دید نیاد، عکسش placeholder (data:) است. فقط چند کارت آخر (جدیدترین‌ها) رو می‌آریم.
+LAZY_CARDS = 20
+LAZY_WAIT_MS = 4_000
+IMG_LOADED_JS = "(el) => { const i = el.querySelector('img'); return !i || (!i.src.startsWith('data:') && i.complete && i.naturalWidth > 0); }"
+
+
+def load_lazy_images(page) -> None:
+    for card in page.query_selector_all('[class*="MessageItem_messageWrapper"]')[-LAZY_CARDS:]:
+        if card.query_selector("img") is None:
+            continue
+        card.scroll_into_view_if_needed()
+        try:
+            page.wait_for_function(IMG_LOADED_JS, arg=card, timeout=LAZY_WAIT_MS)
+        except PWTimeout:
+            pass
+
+
 def fetch_channel(page, channel: str) -> list[dict]:
     url = f"https://ble.ir/s/{channel}"
     # networkidle روی صفحه‌ی بله گاهی هیچ‌وقت نمی‌رسه؛ با domcontentloaded و انتظار کوتاه برای پست‌ها
     page.goto(url, wait_until="domcontentloaded", timeout=60_000)
     page.wait_for_timeout(8_000)
+    load_lazy_images(page)
     # اول ساختار جدید (با data-sid و تاریخ)؛ اگه نبود، ساختار قبلی
     posts = posts_from_v2(page.evaluate(EXTRACT_V2_JS), channel)
     if posts:
