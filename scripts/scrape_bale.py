@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import sys
+import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -161,20 +162,25 @@ def posts_from_v2(cards: list[dict], channel: str) -> list[dict]:
 
 
 # فید بله lazy است: تا وقتی کارت به دید نیاد، عکسش placeholder (data:) است. فقط چند کارت آخر (جدیدترین‌ها) رو می‌آریم.
-LAZY_CARDS = 20
-LAZY_WAIT_MS = 10_000
+LAZY_CARDS = 5
+LAZY_TOTAL_MS = 15_000
 IMG_LOADED_JS = "(el) => { const i = el.querySelector('img'); return !i || (!i.src.startsWith('data:') && i.complete && i.naturalWidth > 0); }"
 
 
 def load_lazy_images(page) -> None:
+    # سقف کل صبر برای همه‌ی عکس‌ها با هم (نه برای هر عکس)؛ بعد از سقف، ادامه بدون صبر بیشتر
+    deadline = time.monotonic() + LAZY_TOTAL_MS / 1000
     for card in page.query_selector_all('[class*="MessageItem_messageWrapper"]')[-LAZY_CARDS:]:
         if card.query_selector("img") is None:
             continue
         card.scroll_into_view_if_needed()
+        left_ms = int((deadline - time.monotonic()) * 1000)
+        if left_ms <= 0:
+            break
         try:
-            page.wait_for_function(IMG_LOADED_JS, arg=card, timeout=LAZY_WAIT_MS)
+            page.wait_for_function(IMG_LOADED_JS, arg=card, timeout=left_ms)
         except PWTimeout:
-            pass
+            break
 
 
 def fetch_channel(page, channel: str) -> list[dict]:

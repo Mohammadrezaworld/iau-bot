@@ -24,19 +24,25 @@ class Page:
         if self.timeout: raise PWTimeout("timeout")
 
 out = {}
-# ۲۵ کارت: ۵ کارت اول متنی، ۲۰ کارت آخر با عکس
+# ۲۵ کارت: ۵ کارت اول متنی، ۲۰ کارت آخر با عکس. فقط ۵ کارت آخر (جدیدترین‌ها) بررسی می‌شن
 cards = [Card(False) for _ in range(5)] + [Card(True) for _ in range(20)]
 p = Page(cards); sb.load_lazy_images(p)
-out["only_last_20_scrolled"] = all(c.scrolled for c in cards[5:]) and not any(c.scrolled for c in cards[:5])
-out["waited_once_per_image_card"] = len(p.waits) == 20
+out["only_last_5_scrolled"] = all(c.scrolled for c in cards[-5:]) and not any(c.scrolled for c in cards[:20])
+out["waited_once_per_checked_image_card"] = len(p.waits) == 5
 out["wait_checks_data_placeholder"] = all("data:" in e for e, _ in p.waits)
-out["wait_has_timeout"] = all(t == sb.LAZY_WAIT_MS for _, t in p.waits)
-# بعد از تایم‌اوت، خطا بالا نمی‌آید و ادامه داده می‌شود
-q = Page([Card(True)], timeout=True)
+out["wait_within_total_budget"] = all(0 < t <= sb.LAZY_TOTAL_MS for _, t in p.waits) and all(a >= b for (_, a), (_, b) in zip(p.waits, p.waits[1:]))
+# بعد از تایم‌اوت، خطا بالا نمی‌آید و بقیه‌ی کارت‌ها بی‌صبر رد می‌شن
+q = Page([Card(True) for _ in range(3)], timeout=True)
 try:
-    sb.load_lazy_images(q); out["timeout_is_swallowed"] = True
+    sb.load_lazy_images(q); out["timeout_is_swallowed_and_stops"] = len(q.waits) == 1
 except Exception:
-    out["timeout_is_swallowed"] = False
+    out["timeout_is_swallowed_and_stops"] = False
+# سقف کل زمان: اگه از ددلاین گذشته باشیم، هیچ صبری انجام نمی‌شه
+clock = iter([0.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0])
+sb.time = types.SimpleNamespace(monotonic=lambda: next(clock))
+r = Page([Card(True) for _ in range(3)]); sb.load_lazy_images(r)
+out["deadline_stops_waiting"] = len(r.waits) == 0
+sb.time = __import__("time")
 # خروجی پارس قبلی همان می‌ماند: عکس http اول، پست بدون متن کنار گذاشته می‌شود
 out["parse_unchanged"] = sb.posts_from_v2([{"sid": "r-1700000000000", "text": "متن کافی برای تست ۱۲:۰۰", "date": "", "images": ["https://x/a.jpg"]}], "c")[0]["image_url"] == "https://x/a.jpg"
 print(json.dumps(out))
