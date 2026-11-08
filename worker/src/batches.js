@@ -65,7 +65,7 @@ export async function prepareBatch(env) {
 }
 
 // یک دسته: ساخت، claim اتمی هر پست، و بعد پیش‌نمایش (دستی) یا ارسال خودکار
-async function createBatch(env, groupId, posts, auto, epoch = 0) {
+export async function createBatch(env, groupId, posts, auto, epoch = 0) {
   const now = nowUtc();
   const created = await env.DB.prepare("INSERT INTO scrape_batches (state, created_utc, expires_utc) VALUES ('pending', ?, ?) RETURNING id")
     .bind(now, now + BATCH_TTL_S).first();
