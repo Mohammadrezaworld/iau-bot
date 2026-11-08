@@ -8,8 +8,8 @@ import { handleCallback } from "./wizard.js";
 import { handleKeywordCallback } from "./keywords.js";
 import { handleHolidayCallback } from "./holidays.js";
 import { handleJozvePost, handleJozveCommand, handleJozveCallback, handleJozveRemoveCallback, handleDmCallback, groupMovedGuide, dmIsMember, DM_NOT_MEMBER } from "./jozve.js";
-import { cleanPostText, inTehranQuietHours, handleStatusRefresh } from "./channels.js";
-import { prepareBatch, handleBatchCallback, expireBatches, listStalledBatches, approveBatch } from "./batches.js";
+import { cleanPostText, inTehranQuietHours, handleStatusRefresh, isJunkPost } from "./channels.js";
+import { prepareBatch, handleBatchCallback, expireBatches, listStalledBatches, approveBatch, createBatch } from "./batches.js";
 import { scrapeSettingsCommand, handleScrapeSettingsCallback } from "./scrape_mode.js";
 import { ADMIN_MENU } from "./admin_menu.js";
 import { isAdmin, isOwner } from "./admin.js";
@@ -105,17 +105,17 @@ async function handleIngest(request, env) {
     .bind(source, channel, ts, newCount)
     .run();
 
-  // محافظ سیل: اگه یک اسکرپ بیش از حد پست قابل ارسال از بله بیاره، به گروه نمی‌ره
+  // محافظ سیل: اگه یک اسکرپ بیش از حد پست قابل ارسال از بله بیاره، به گروه نمی‌ره و همه‌شون یک‌جا برای تأیید مالک می‌آن
   const held = source === "bale" && !firstRun && !dryRun && sendCount > FLOOD_LIMIT;
   if (held) {
-    await env.DB.prepare(
-      "INSERT OR IGNORE INTO post_outcomes (post_id, outcome, at_utc) SELECT id, 'held_flood', ? FROM posts WHERE source = ? AND channel = ? AND sent_at_utc IS NULL AND first_seen_utc = ?"
-    ).bind(ts, source, channel, ts).run();
-    await env.DB.prepare(
-      "UPDATE posts SET sent_at_utc = ? WHERE source = ? AND channel = ? AND sent_at_utc IS NULL AND first_seen_utc = ?"
-    ).bind(ts, source, channel, ts).run();
-    await recordEvent(env, source, channel, "error", `flood: ${sendCount} پست جدید ثبت شد ولی به گروه نرفت`);
-    await notifyOwner(env, `پست‌های جدید بله (${channel}): ${sendCount} پست یک‌جا رسید. برای امنیت به گروه نرفت و کنار گذاشته شدن. در این نسخه مسیر ارسال مجدد ندارن؛ وضعیتشون در /scrape_status ثبت شده.`);
+    const { results: floodRows } = await env.DB.prepare(
+      "SELECT * FROM posts WHERE source = ? AND channel = ? AND sent_at_utc IS NULL AND first_seen_utc = ? AND id NOT IN (SELECT post_id FROM scrape_batch_items) ORDER BY id"
+    ).bind(source, channel, ts).all();
+    const groupId = await getSetting(env, "group_id", "");
+    const reviewable = floodRows.filter((p) => !isJunkPost(p.text));
+    if (groupId && reviewable.length) await createBatch(env, groupId, reviewable, false);
+    await recordEvent(env, source, channel, "error", `flood: ${sendCount} پست جدید ثبت شد؛ برای تأیید مالک در یک دسته گذاشته شد`);
+    await notifyOwner(env, `پست‌های جدید بله (${channel}): ${sendCount} پست یک‌جا رسید. برای امنیت به گروه نرفت و در یک دسته برای تأیید شما گذاشته شد؛ از همان پیام تأیید یا رد کنید.`);
   }
 
   // گزارش حالت آزمایشی: هر بار که پست جدیدی باشه، برای مالک خلاصه‌ی تصمیم‌ها

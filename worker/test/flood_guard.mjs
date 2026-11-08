@@ -56,12 +56,15 @@ const toGroup = () => sent.filter((s) => s.chat === "-1001" && s.text.includes("
   const groupMsgs = sent.filter((s) => s.chat === "-1001");
   const ownerMsgs = sent.filter((s) => s.chat === "900000001");
   check("flood (7 new bale posts): nothing sent to group", groupMsgs.length === 0, JSON.stringify(groupMsgs).slice(0, 120));
-  check("flood: owner notified once", ownerMsgs.length === 1 && ownerMsgs[0].text.includes("به گروه نرفت"));
-  const left = raw.prepare("SELECT COUNT(*) AS n FROM posts WHERE sent_at_utc IS NULL").get().n;
-  check("flood: held posts marked sent (not queued forever)", left === 0, String(left));
-  const floodMsg = ownerMsgs[0] ? ownerMsgs[0].text : "";
-  check("flood: message makes no promise of manual resend", !floodMsg.includes("بگو تا دستی بفرستم") && floodMsg.includes("کنار گذاشته") && floodMsg.includes("ارسال مجدد ندارن"));
-  check("flood: held posts recorded as held_flood (not delivered)", raw.prepare("SELECT COUNT(*) AS n FROM post_outcomes WHERE outcome = 'held_flood'").get().n === 7 && raw.prepare("SELECT COUNT(*) AS n FROM post_outcomes WHERE outcome = 'delivered'").get().n === 0);
+  const notice = ownerMsgs.filter((m) => m.text.includes("به گروه نرفت"));
+  check("flood: owner notified once with review wording", notice.length === 1 && notice[0].text.includes("برای تأیید شما"), String(notice.length));
+  check("flood: owner also gets the approve/reject preview", ownerMsgs.length >= 2, String(ownerMsgs.length));
+  const pending = raw.prepare("SELECT COUNT(*) AS n FROM scrape_batch_items bi JOIN scrape_batches b ON b.id = bi.batch_id WHERE b.state = 'pending' AND bi.batch_id IS NOT NULL").get().n;
+  check("flood: all 7 held posts are in one pending review batch", pending === 7, String(pending));
+  const unsent = raw.prepare("SELECT COUNT(*) AS n FROM posts WHERE sent_at_utc IS NULL").get().n;
+  check("flood: held posts stay unsent until owner decides", unsent === 7, String(unsent));
+  check("flood: notice no longer says resend is impossible", !notice[0].text.includes("ارسال مجدد ندارن") && !notice[0].text.includes("کنار گذاشته شدن"));
+  check("flood: no held_flood or delivered outcome recorded", raw.prepare("SELECT COUNT(*) AS n FROM post_outcomes WHERE outcome IN ('held_flood','delivered')").get().n === 0);
   const ev = raw.prepare("SELECT detail FROM scrape_events WHERE kind = 'error'").get();
   check("flood: recorded in scrape_events", !!ev && ev.detail.includes("flood"));
 }
