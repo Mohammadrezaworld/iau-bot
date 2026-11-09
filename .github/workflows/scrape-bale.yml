@@ -15,17 +15,18 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Cache Playwright browsers
+      - name: Cache pip and Playwright browsers
         uses: actions/cache@v4
         with:
-          path: ~/.cache/ms-playwright
-          key: playwright-chromium-${{ runner.os }}
+          path: |
+            ~/.cache/pip
+            ~/.cache/ms-playwright
+          key: bale-deps-${{ runner.os }}-py3.11-v1
 
       - name: Install dependencies
         run: |
           pip install playwright httpx
           python -m playwright install chromium
-          python -m playwright install-deps chromium
 
       - name: Scrape Bale channels
         working-directory: scripts
