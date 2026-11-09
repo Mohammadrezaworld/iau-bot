@@ -17,7 +17,7 @@ from playwright.sync_api import sync_playwright
 from quiet import in_quiet_hours
 from send_to_worker import report_error, send_posts
 
-CHANNELS = ["iaut_fani", "iautcom", "mytest242"]  # TEMP تست؛ قبل از merge برداشته شود
+CHANNELS = ["iaut_fani", "iautcom"]
 TIME_RE = re.compile(r"[0-9\u06F0-\u06F9]{1,2}:[0-9\u06F0-\u06F9]{2}")
 
 # در مرورگر \d فقط ارقام انگلیسی رو می‌شناسه؛ ساعت‌های فارسی هم باید پیدا بشن
