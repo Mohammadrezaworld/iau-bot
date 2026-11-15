@@ -17,7 +17,7 @@ jobs:
         working-directory: worker
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: c222c6e6cea3c9a98481e1f06079fd5d
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
     steps:
       - uses: actions/checkout@v4
@@ -53,6 +53,11 @@ jobs:
 
       - name: Set bot token secret
         run: printf "%s" "$TELEGRAM_BOT_TOKEN" | npx wrangler secret put TELEGRAM_BOT_TOKEN
+
+      - name: Set owner id secret
+        env:
+          OWNER_ID: ${{ secrets.OWNER_ID }}
+        run: printf "%s" "$OWNER_ID" | npx wrangler secret put OWNER_ID
 
       - name: Deploy worker
         run: npx wrangler deploy
