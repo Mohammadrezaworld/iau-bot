@@ -54,6 +54,11 @@ jobs:
       - name: Set bot token secret
         run: printf "%s" "$TELEGRAM_BOT_TOKEN" | npx wrangler secret put TELEGRAM_BOT_TOKEN
 
+      - name: Set group join link secret
+        env:
+          GROUP_JOIN_LINK: ${{ secrets.GROUP_JOIN_LINK }}
+        run: printf "%s" "$GROUP_JOIN_LINK" | npx wrangler secret put GROUP_JOIN_LINK
+
       - name: Set owner id secret
         env:
           OWNER_ID: ${{ secrets.OWNER_ID }}
