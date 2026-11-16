@@ -6,7 +6,7 @@
 import { tg } from "./telegram.js";
 import { getSetting } from "./public.js";
 import { recordEvent } from "./monitor.js";
-import { readModeSnapshot, inTehranQuietHours, keywordsList, cleanPostText, isJunkPost, buildSections, chunkMessages, sendChunk, sendPhotos } from "./channels.js";
+import { readModeSnapshot, inTehranQuietHours, keywordsList, cleanPostText, isJunkPost, isJunkBalePost, buildSections, chunkMessages, sendChunk, sendPhotos } from "./channels.js";
 import { claimExternal, finishExternal, AmbiguousError, LeaseLostError } from "./effects.js";
 import { setOutcome } from "./outcomes.js";
 import { claimUpdate, markOutcome, markDoneWithRetry, notifyNeedsReview } from "./updates.js";
@@ -38,7 +38,7 @@ export async function prepareBatch(env) {
   // پست‌های بله که فقط فوتر/عدد هستن، بدون ارسال علامت می‌خورن
   const candidates = [];
   for (const p of results) {
-    if (p.source === "bale" && isJunkPost(p.text)) {
+    if (p.source === "bale" && isJunkBalePost(p)) {
       await setOutcome(env, [p.id], "junk");
       await env.DB.prepare("UPDATE posts SET sent_at_utc = ? WHERE id = ?").bind(nowUtc(), p.id).run();
     } else {

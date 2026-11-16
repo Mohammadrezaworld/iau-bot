@@ -8,7 +8,7 @@ import { handleCallback } from "./wizard.js";
 import { handleKeywordCallback } from "./keywords.js";
 import { handleHolidayCallback } from "./holidays.js";
 import { handleJozvePost, handleJozveCommand, handleJozveCallback, handleJozveRemoveCallback, handleDmCallback, groupMovedGuide, dmIsMember, DM_NOT_MEMBER } from "./jozve.js";
-import { cleanPostText, inTehranQuietHours, handleStatusRefresh, isJunkPost } from "./channels.js";
+import { cleanPostText, inTehranQuietHours, handleStatusRefresh, isJunkBalePost } from "./channels.js";
 import { prepareBatch, handleBatchCallback, expireBatches, listStalledBatches, approveBatch, createBatch } from "./batches.js";
 import { scrapeSettingsCommand, handleScrapeSettingsCallback } from "./scrape_mode.js";
 import { ADMIN_MENU } from "./admin_menu.js";
@@ -112,7 +112,7 @@ async function handleIngest(request, env) {
       "SELECT * FROM posts WHERE source = ? AND channel = ? AND sent_at_utc IS NULL AND first_seen_utc = ? AND id NOT IN (SELECT post_id FROM scrape_batch_items) ORDER BY id"
     ).bind(source, channel, ts).all();
     const groupId = await getSetting(env, "group_id", "");
-    const reviewable = floodRows.filter((p) => !isJunkPost(p.text));
+    const reviewable = floodRows.filter((p) => !isJunkBalePost(p));
     if (groupId && reviewable.length) await createBatch(env, groupId, reviewable, false);
     await recordEvent(env, source, channel, "error", `flood: ${sendCount} پست جدید ثبت شد؛ برای تأیید مالک در یک دسته گذاشته شد`);
     await notifyOwner(env, `پست‌های جدید بله (${channel}): ${sendCount} پست یک‌جا رسید. برای امنیت به گروه نرفت و در یک دسته برای تأیید شما گذاشته شد؛ از همان پیام تأیید یا رد کنید.`);
