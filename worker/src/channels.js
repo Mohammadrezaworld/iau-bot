@@ -35,6 +35,10 @@ export function cleanPostText(raw) {
 export function isJunkPost(text) {
   return (cleanPostText(text).match(/\p{L}/gu) || []).length < 3;
 }
+// پست تصویری بدون کپشن جنک نیست: عکسش ارزش ارسال داره
+export function isJunkBalePost(p) {
+  return !p.image_url && isJunkPost(p.text);
+}
 
 export function isImportant(text, keywords) {
   const t = normalizeForMatch(text);

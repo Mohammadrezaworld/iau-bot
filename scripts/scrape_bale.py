@@ -144,9 +144,13 @@ def posts_from_v2(cards: list[dict], channel: str) -> list[dict]:
         raw = card.get("text", "")
         if not sid or sid in seen or not TIME_RE.search(raw):
             continue
+        image_url = next((u for u in card.get("images", []) if u.startswith("http")), "")
         text = clean_post_text(raw)
         if text is None:
-            continue
+            # پست تصویری بدون کپشن: اگه عکس واقعی داره، با متن خالی نگه داشته می‌شه؛ بدون عکس، کنار گذاشته می‌شه
+            if not image_url:
+                continue
+            text = ""
         seen.add(sid)
         posts.append({
             "source": "bale",
@@ -155,7 +159,7 @@ def posts_from_v2(cards: list[dict], channel: str) -> list[dict]:
             "text": text,
             # اول تاریخ خود پیام (از sid)؛ اگه نبود، تاریخ جداکننده‌ی روز
             "post_date": date_from_sid(sid) or tehran_date(card.get("date", "")),
-            "image_url": next((u for u in card.get("images", []) if u.startswith("http")), ""),
+            "image_url": image_url,
         })
     return posts
 
