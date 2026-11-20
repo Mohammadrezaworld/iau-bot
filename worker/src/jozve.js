@@ -1,6 +1,6 @@
 // جزوه‌ها و نمونه‌سوال‌ها (/jozve): ادمین فایل رو مستقیم توی کانال خصوصی می‌فرسته (بدون محدودیت حجم ربات)،
 // ربات پست کانال رو ثبت می‌کنه و کاربر در گروه با دکمه‌ها انتخاب می‌کنه؛ فایل با copyMessage بدون نام کانال فرستاده می‌شه.
-import { tg, sendMessage, tryDeleteMessage } from "./telegram.js";
+import { tg, sendMessage, tryDeleteMessage, answerCallback } from "./telegram.js";
 import { isAdmin, getRole, audit } from "./admin.js";
 import { recordEvent } from "./monitor.js";
 import { claimExternal, finishExternal, LeaseLostError, AmbiguousError } from "./effects.js";
@@ -179,7 +179,9 @@ async function saveMenuState(env, state) {
   ).bind(JOZVE_MENU_KEY, JSON.stringify(state)).run();
 }
 
-const ack = (env, cq, text = "") => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text });
+const ack = (env, cq, text = "") => text && cq.message?.chat?.type !== "private"
+  ? callbackNotice(env, cq.message.chat.id, text)
+  : answerCallback(env, cq, text);
 
 function grid(buttons, tail = []) {
   const rows = [];

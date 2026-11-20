@@ -1,6 +1,6 @@
 // /metro: منوی مرحله‌به‌مرحله‌ی گروه (مبدأ ← مقصد ← نتیجه) و آپلود جدول توسط ادمین در DM.
 // وضعیت منو داخل خود دکمه‌هاست (بدون جدول state)؛ فقط درخواست‌کننده می‌تونه از دکمه‌ها استفاده کنه.
-import { tg, sendMessage, tryDeleteMessage } from "./telegram.js";
+import { tg, sendMessage, tryDeleteMessage, answerCallback } from "./telegram.js";
 import { isAdmin, audit, getRole } from "./admin.js";
 import { tehranToday, faDate } from "./calendar.js";
 import { pushUndo } from "./undo.js";
@@ -74,7 +74,9 @@ async function editTemp(env, chatId, msgId, text, markup) {
   await rememberMsg(env, chatId, msgId);
 }
 
-const ack = (env, cq, text = "") => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text });
+const ack = (env, cq, text = "") => text && cq.message?.chat?.type !== "private"
+  ? sendTemp(env, cq.message.chat.id, text)
+  : answerCallback(env, cq, text);
 
 // دکمه‌ها دو ستونه؛ آخرین ردیف دکمه‌های کمکی
 function grid(buttons, tail = []) {
@@ -283,7 +285,7 @@ export async function handleMetroUploadCallback(env, cq) {
     "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
   ).bind(`metro_active_${data.kind}`, String(row.id)).run();
   await audit(env, cq.from.id, "metro_upload", `${data.kind}:${row.id}`);
-  await ack(env, cq, "ثبت شد");
+  await ack(env, cq);
   return sendMessage(env, chatId, `جدول «${KIND_LABEL[data.kind]}» فعال شد (نسخه ${fa2(row.id)}).`);
 }
 

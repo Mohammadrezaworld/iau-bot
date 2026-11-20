@@ -16,7 +16,7 @@ INSERT INTO processed_updates VALUES (2001,'done',1,1791966000),(2002,'failed',1
 raw.exec(SCHEMA);
 
 const worker = (await import(WORKER + "src/index.js")).default;
-const { webhookSecret, tg } = await import(WORKER + "src/telegram.js");
+const { webhookSecret, tg, acknowledgeCallbackEarly, answerCallback } = await import(WORKER + "src/telegram.js");
 const { claimUpdate, markOutcome } = await import(WORKER + "src/updates.js");
 const { claimExternal, finishExternal, dbEffect, LeaseLostError } = await import(WORKER + "src/effects.js");
 const { handleJozveCallback } = await import(WORKER + "src/jozve.js");
@@ -182,6 +182,14 @@ const groupLookupAts = trace.reduce((a, x, i) => { if (x === 'db:first:SELECT va
 ok_("C6 jozve callback acknowledges after quiet-hours guard, before dispatch lookup/edit", r.status === 200 && calls[0] === "answerCallbackQuery" && calls.includes("editMessageText") && groupLookupAts.length >= 2 && groupLookupAts[0] < jozveAckAt && jozveAckAt < groupLookupAts[1]);
 trace = null;
 
+// C6b: callback خصوصی پیش از اولین claim صف جواب داده می‌شود.
+reset(); trace = [];
+r = await hook({ update_id: 3459, callback_query: { id: "private-first-db", from: { id: 5 }, data: "kw:n", message: { message_id: 59, chat: { id: 5, type: "private" } } } });
+const privateAckAt = trace.indexOf("tg:answerCallbackQuery");
+const queueClaimAt = trace.findIndex((x) => x.startsWith("db:run:INSERT OR IGNORE INTO update_queue"));
+ok_("C6b private callback acknowledges before update_queue D1 claim", r.status === 200 && privateAckAt >= 0 && queueClaimAt > privateAckAt);
+trace = null;
+
 // C7: منوی ادمین، ack پیش از اجرای دستور و پاسخ راهنما باقی می‌ماند.
 reset();
 r = await hook({ update_id: 3456, callback_query: { id: "admin-menu-ack-test", from: { id: 5 }, data: "am:19", message: { message_id: 51, chat: { id: 5, type: "private" } } } });
@@ -330,6 +338,14 @@ try { await tg(env, "answerCallbackQuery", { callback_query_id: "other-ack-error
 catch (err) { otherAckError = err; }
 globalThis.fetch = savedFetch;
 ok_("T3 unrelated callback 400 still fails explicitly", otherAckError?.refused === true && /unrelated callback failure/.test(otherAckError.message));
+
+// T4: toast متن‌دار بعد از ACK زودهنگام به پیام قابل‌دیدن تبدیل می‌شود و تکرار نمی‌شود.
+reset();
+const feedbackCb = { id: "ack-feedback-fallback", message: { message_id: 900, chat: { id: 5, type: "private" } } };
+await acknowledgeCallbackEarly(env, feedbackCb);
+await answerCallback(env, feedbackCb, "بازخورد قابل‌دیدن", true);
+await answerCallback(env, feedbackCb, "بازخورد قابل‌دیدن", true);
+ok_("T4 text feedback survives an early ack and is sent only once", calls.filter((m) => m === "answerCallbackQuery").length === 1 && sentTo(5).filter((m) => m.text === "بازخورد قابل‌دیدن").length === 1);
 
 console.log(fails === 0 ? "ALL PASS" : `${fails} FAILED`);
 process.exit(fails ? 1 : 0);

@@ -1,6 +1,6 @@
 // پنل مالک: حالت ارسال خبرهای اسکرپ (تأیید دستی / ارسال خودکار / توقف انتشار).
 // فقط اسکرپ؛ یادآوری رویدادها مستقل است. تغییر فقط برای مالک، در هر callback نهایی بررسی می‌شه.
-import { tg } from "./telegram.js";
+import { tg, answerCallback } from "./telegram.js";
 import { isOwner, audit } from "./admin.js";
 import { scrapeMode, readModeSnapshot, autoAllowed } from "./channels.js";
 import { prepareBatch } from "./batches.js";
@@ -138,10 +138,7 @@ export async function handleScrapeSettingsCallback(env, cq, ctx) {
   const chatId = cq.message.chat.id;
   const parts = String(cq.data).split(":");
   const action = parts[1];
-  const ack = (text = "") => tg(env, "answerCallbackQuery", {
-    callback_query_id: cq.id,
-    ...(text ? { text: String(text).slice(0, 190), show_alert: true } : {}),
-  });
+  const ack = (text = "") => answerCallback(env, cq, text, Boolean(text));
   if (!owner) return ack("");
   const btn = (text, data) => ({ text, callback_data: data });
   if (action === "locked" || (action === "auto" && !autoAllowed(env))) return ack(LOCKED_TEXT);

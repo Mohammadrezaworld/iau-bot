@@ -1,5 +1,5 @@
 // مدیریت تعطیلات رسمی در DM (فقط ادمین کامل). تعطیلات روی انتخاب جدول جمعه‌ی مترو اثر دارن.
-import { tg, sendMessage, tryDeleteMessage } from "./telegram.js";
+import { tg, sendMessage, tryDeleteMessage, answerCallback } from "./telegram.js";
 import { audit, getRole } from "./admin.js";
 import { parseDateInput, normalizeDigits } from "./jalali.js";
 import { faDate } from "./calendar.js";
@@ -57,7 +57,7 @@ export async function holidayCommand(env, chatId, userId, cmd, arg) {
 export async function handleHolidayCallback(env, cq) {
   const data = String(cq.data || "");
   const chatId = cq.message.chat.id;
-  const answer = (text = "") => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text });
+  const answer = (text = "") => answerCallback(env, cq, text);
 
   if (!(await isFullAdmin(env, cq.from.id))) return answer("این کار برای سطح دسترسی شما نیست.");
   if (data === "hol:n") {

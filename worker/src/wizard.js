@@ -1,5 +1,5 @@
 // افزودن مرحله‌به‌مرحله‌ی رویداد، شماره و لینک در DM، و حذف با دکمه (فقط ادمین).
-import { tg, sendMessage } from "./telegram.js";
+import { tg, sendMessage, answerCallback } from "./telegram.js";
 import { audit } from "./admin.js";
 import { parseDateInput, normalizeDigits } from "./jalali.js";
 import { faDate } from "./calendar.js";
@@ -180,7 +180,7 @@ export async function handleCallback(env, cq, ctx = null) {
   const userId = cq.from.id;
   const chatId = cq.message.chat.id;
   const data = cq.data || "";
-  const answer = (text = "") => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text });
+  const answer = (text = "") => answerCallback(env, cq, text);
 
   if (data.startsWith("ed:")) {
     const parts = data.split(":");

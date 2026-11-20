@@ -23,6 +23,57 @@ export function styleMarkup(markup) {
 // Callback IDs فقط یک‌بار جواب داده می‌شوند؛ cache محدود است تا isolate رشد نامحدود نکند.
 const callbackAckCache = new Map();
 const CALLBACK_ACK_CACHE_MAX = 256;
+const callbackAckContexts = new Map();
+
+function rememberCallbackContext(cq) {
+  const id = String(cq.id);
+  if (!callbackAckContexts.has(id)) {
+    callbackAckContexts.set(id, {
+      chat: cq.message?.chat || null,
+      messageId: cq.message?.message_id ?? null,
+      feedback: new Map(),
+    });
+  }
+  if (callbackAckContexts.size > CALLBACK_ACK_CACHE_MAX) {
+    callbackAckContexts.delete(callbackAckContexts.keys().next().value);
+  }
+}
+
+// ACK پیش از D1/دسترسی/handler؛ پیام متنی بعدی در پیوی به‌صورت پیام عادی نمایش داده می‌شود.
+export async function acknowledgeCallbackEarly(env, cq) {
+  if (!cq?.id) return null;
+  rememberCallbackContext(cq);
+  return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+}
+
+// اگر spinner قبلاً بسته شده، toast متنی دیگر به تلگرام نمی‌رسد؛ آن را به پیام قابل‌دیدن تبدیل می‌کنیم.
+export async function answerCallback(env, cq, text = "", showAlert = false) {
+  const context = cq?.id ? callbackAckContexts.get(String(cq.id)) : null;
+  if (context && text) {
+    const chatId = context.chat?.id;
+    if (chatId == null) return null;
+    const key = String(text).slice(0, 4000);
+    if (context.feedback.has(key)) return context.feedback.get(key);
+    const request = tg(env, "sendMessage", {
+      chat_id: chatId,
+      text: key,
+      ...(context.chat?.type === "private" || context.messageId == null ? {} : { reply_to_message_id: context.messageId }),
+      disable_web_page_preview: true,
+    });
+    context.feedback.set(key, request);
+    try {
+      return await request;
+    } catch (err) {
+      if (context.feedback.get(key) === request) context.feedback.delete(key);
+      throw err;
+    }
+  }
+  return tg(env, "answerCallbackQuery", {
+    callback_query_id: cq.id,
+    ...(text ? { text: String(text).slice(0, 190) } : {}),
+    ...(showAlert ? { show_alert: true } : {}),
+  });
+}
 
 export async function tg(env, method, payload) {
   if (payload && payload.reply_markup) payload = { ...payload, reply_markup: styleMarkup(payload.reply_markup) };

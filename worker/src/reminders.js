@@ -7,6 +7,7 @@ import { tehranToday, addDays, faDate, faNum, daysBetween } from "./calendar.js"
 import { getSetting } from "./public.js";
 import { inTehranQuietHours } from "./channels.js";
 import { isOwner } from "./admin.js";
+import { claimExternal, finishExternal, LeaseLostError, AmbiguousError } from "./effects.js";
 
 const EVENING = [20, 0];
 const MORNING = [6, 30];
@@ -76,22 +77,60 @@ export async function processReminders(env, now = Date.now()) {
   }
 }
 
-export async function handleReminderCallback(env, cq) {
+export async function handleReminderCallback(env, cq, ctx = null) {
   const answer = (text = "") => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text });
-  if (!(await isOwner(env, cq.from.id))) return answer();
+  await answer();
+  const chat = cq.message?.chat;
+  if (!chat || chat.type !== "private") return;
+  const chatId = chat.id;
+  if (!(await isOwner(env, cq.from.id))) return;
   const [, op, id, kind] = String(cq.data || "").split(":");
   const eventId = Number(id);
-  await answer();
-  const done = await env.DB.prepare("SELECT 1 AS x FROM reminder_log WHERE event_id = ? AND kind = ?").bind(eventId, `done:${kind}`).first();
-  if (done) return tg(env, "sendMessage", { chat_id: cq.message.chat.id, text: "این یادآوری قبلاً جواب گرفته." });
-  const e = await env.DB.prepare("SELECT * FROM events WHERE id = ?").bind(eventId).first();
-  if (!e || e.archived) return tg(env, "sendMessage", { chat_id: cq.message.chat.id, text: "این رویداد دیگه فعال نیست." });
-  if (op === "s") {
-    const groupId = await getSetting(env, "group_id", "");
-    await tg(env, "sendMessage", { chat_id: groupId, text: groupText(e, tehranToday()), disable_web_page_preview: true });
-    await mark(env, eventId, `done:${kind}`);
-    return tg(env, "sendMessage", { chat_id: cq.message.chat.id, text: "یادآوری به گروه ارسال شد." });
+  if (!Number.isSafeInteger(eventId) || eventId <= 0 || !["s", "r"].includes(op) || !Object.hasOwn(LABEL, kind)) {
+    return tg(env, "sendMessage", { chat_id: chatId, text: "این دکمه معتبر نیست؛ دوباره /review را بررسی کن." });
   }
+  const done = await env.DB.prepare("SELECT 1 AS x FROM reminder_log WHERE event_id = ? AND kind = ?").bind(eventId, `done:${kind}`).first();
+  if (done) return tg(env, "sendMessage", { chat_id: chatId, text: "این یادآوری قبلاً جواب گرفته." });
+  const e = await env.DB.prepare("SELECT * FROM events WHERE id = ?").bind(eventId).first();
+  if (!e || e.archived) return tg(env, "sendMessage", { chat_id: chatId, text: "این رویداد دیگه فعال نیست." });
+  const groupId = op === "s" ? await getSetting(env, "group_id", "") : "";
+  if (op === "s" && !groupId) return tg(env, "sendMessage", { chat_id: chatId, text: "گروه اصلی تنظیم نیست؛ یادآوری ارسال نشد." });
+
+  // approve و reject برای یک یادآوری از یک کلید استفاده می‌کنند تا کلیک‌های هم‌زمان یک تصمیم را برنده کنند.
+  const opKey = `reminder:${eventId}:${kind}`;
+  const claim = await claimExternal(env, ctx, opKey, "reminder");
+  if (claim.status === "lease_lost") throw new LeaseLostError();
+  if (claim.status === "busy") return tg(env, "sendMessage", { chat_id: chatId, text: "این یادآوری در حال پردازشه؛ چند لحظه بعد دوباره بررسی کن." });
+  if (claim.status === "ambiguous") throw new AmbiguousError(opKey);
+  if (claim.status === "done") {
+    // اگر ثبت reminder_log بعد از اثر موفق شکست خورده باشد، فقط marker را ترمیم می‌کنیم؛ ارسال تکرار نمی‌شود.
+    await mark(env, eventId, `done:${kind}`);
+    return tg(env, "sendMessage", { chat_id: chatId, text: "این یادآوری قبلاً جواب گرفته." });
+  }
+
+  if (op === "r") {
+    let finished = false;
+    try { finished = await finishExternal(env, ctx, opKey, { ok: true, result: "rejected" }); } catch {}
+    if (!finished) throw new AmbiguousError(opKey);
+    await mark(env, eventId, `done:${kind}`);
+    return tg(env, "sendMessage", { chat_id: chatId, text: "یادآوری ارسال نشد." });
+  }
+
+  let sent;
+  try {
+    sent = await tg(env, "sendMessage", { chat_id: groupId, text: groupText(e, tehranToday()), disable_web_page_preview: true });
+  } catch (err) {
+    if (err && err.refused) {
+      let recorded = false;
+      try { recorded = await finishExternal(env, ctx, opKey, { ok: false, error: err.message }); } catch {}
+      if (!recorded) throw new AmbiguousError(opKey);
+      throw err;
+    }
+    throw new AmbiguousError(opKey);
+  }
+  let finished = false;
+  try { finished = await finishExternal(env, ctx, opKey, { ok: true, msgId: sent?.message_id, result: "approved" }); } catch {}
+  if (!finished) throw new AmbiguousError(opKey);
   await mark(env, eventId, `done:${kind}`);
-  return tg(env, "sendMessage", { chat_id: cq.message.chat.id, text: "یادآوری ارسال نشد." });
+  return tg(env, "sendMessage", { chat_id: chatId, text: "یادآوری به گروه ارسال شد." });
 }

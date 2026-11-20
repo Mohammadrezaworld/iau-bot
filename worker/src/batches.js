@@ -513,21 +513,31 @@ export async function handleBatchCallback(env, cq, ctx) {
     else text = "نامعتبر";
   } catch (err) {
     // Router callback را زود ack کرده؛ هشدار toast دیگر دیده نمی‌شود، پس نتیجه را روی پیش‌نمایش نگه می‌داریم.
-    await showBatchResult(env, cq.message, "نتیجه نامشخص؛ در /review دیده می‌شه");
+    const notice = "نتیجه نامشخص؛ در /review دیده می‌شه";
+    if (!(await showBatchResult(env, cq.message, notice))) {
+      await tg(env, "sendMessage", { chat_id: cq.message.chat.id, text: notice });
+    }
     await tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: "نتیجه نامشخص؛ در /review دیده می‌شه", show_alert: true }).catch(() => {});
     throw err;
   }
   // نتیجه زیر همان پیش‌نمایش نوشته می‌شه؛ ack زودهنگام پیشاپیش spinner تلگرام را بسته.
-  await showBatchResult(env, cq.message, text);
+  if (!(await showBatchResult(env, cq.message, text))) {
+    await tg(env, "sendMessage", { chat_id: cq.message.chat.id, text: String(text).slice(0, 1000) });
+  }
   return tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: String(text).slice(0, 190) });
 }
 
 async function showBatchResult(env, msg, text) {
-  if (!msg || !msg.text || msg.text.length > 3500) return;
-  await tg(env, "editMessageText", {
-    chat_id: msg.chat.id,
-    message_id: msg.message_id,
-    text: `${msg.text}\n\nنتیجه: ${String(text).slice(0, 300)}`,
-    entities: msg.entities,
-  }).catch(() => {});
+  if (!msg || !msg.text || msg.text.length > 3500) return false;
+  try {
+    await tg(env, "editMessageText", {
+      chat_id: msg.chat.id,
+      message_id: msg.message_id,
+      text: `${msg.text}\n\nنتیجه: ${String(text).slice(0, 300)}`,
+      entities: msg.entities,
+    });
+    return true;
+  } catch (err) {
+    return /message is not modified/i.test(String(err));
+  }
 }

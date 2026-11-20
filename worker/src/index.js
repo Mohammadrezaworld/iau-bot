@@ -1,5 +1,5 @@
 // Worker: webhook تلگرام، دریافت پست‌های اسکرپ‌شده (/ingest)، پشتیبان روزانه.
-import { webhookSecret, tryDeleteMessage } from "./telegram.js";
+import { webhookSecret, tryDeleteMessage, acknowledgeCallbackEarly, answerCallback } from "./telegram.js";
 import { handleAdminMessage, handleDmUser, parseCmd, PUBLIC_CMDS, runPublic } from "./commands.js";
 import { getSetting, isParityQuestion, asksTomorrow } from "./public.js";
 import { tehranToday } from "./calendar.js";
@@ -228,7 +228,7 @@ async function dispatchUpdate(env, update, ctx = null) {
       return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
     }
     // یادآوری رویداد: فقط مالک؛ ارسال به گروه با تأیید او
-    if (data.startsWith("rm2:")) return handleReminderCallback(env, cq);
+    if (data.startsWith("rm2:")) return handleReminderCallback(env, cq, ctx);
     if (!cq.message || !cq.message.chat) return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
     if (data.startsWith("d:") && cq.message.chat.type === "private") {
       // منوی شخصی جزوه‌ها در پیوی (کاربر عادی و ادمین)
@@ -242,7 +242,7 @@ async function dispatchUpdate(env, update, ctx = null) {
       // منوی /metro: در پیوی (کاربر عضو) یا گروه قدیمی؛ فقط برای درخواست‌کننده (داخل handler چک می‌شه)
       if (cq.message.chat.type === "private") {
         if (await dmIsMember(env, cq.from.id)) await handleMetroCallback(env, cq);
-        else await tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: DM_NOT_MEMBER, show_alert: true });
+        else await answerCallback(env, cq, DM_NOT_MEMBER, true);
       } else if (await isOurGroup(env, cq.message.chat.id)) {
         await handleMetroCallback(env, cq);
       }
@@ -314,11 +314,10 @@ async function handleTelegramWebhook(request, env) {
   const update = await request.json().catch(() => null);
   const cq = update && update.callback_query;
   const callbackChat = cq && cq.message && cq.message.chat;
-  // ساعت سکوت گروه: پیام یا واکنش در گروه نمی‌فرستیم؛ j:* در ساعت فعال پس از این guard ack می‌شود.
+  // ساعت سکوت گروه: پیام یا واکنش در گروه نمی‌فرستیم؛ همه‌ی callbackها را بعد از این guard و پیش از صف جواب می‌دهیم.
   if (update && (await groupSilenced(env, update))) return new Response("ok", { status: 200 });
-  if (cq && cq.id && callbackChat && callbackChat.type !== "private" && (String(cq.data || "").startsWith("j:") || String(cq.data || "").startsWith("jk:"))) {
-    await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
-  }
+  const isPrivateDmMenu = callbackChat?.type === "private" && String(cq?.data || "").startsWith("d:");
+  if (cq?.id && !isPrivateDmMenu) await acknowledgeCallbackEarly(env, cq);
 
   const id = update && Number.isSafeInteger(update.update_id) ? update.update_id : null;
   let ctx = null;
