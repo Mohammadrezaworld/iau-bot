@@ -114,6 +114,12 @@ async function rememberMsg(env, chatId, msgId, ttl = RESULT_TTL) {
   ).bind(chatId, msgId, nowS() + ttl).run();
 }
 
+async function callbackNotice(env, chatId, text) {
+  const sent = await tg(env, "sendMessage", { chat_id: chatId, text });
+  await rememberMsg(env, chatId, sent.message_id).catch(() => {});
+  return sent;
+}
+
 // ویرایش منو فقط محتوا رو عوض می‌کنه؛ زمان حذفش رو touchMenu جدا تمدید می‌کنه
 async function editTemp(env, chatId, msgId, text, markup) {
   try {
@@ -313,7 +319,7 @@ export async function handleJozveCallback(env, cq, ctx = null) {
   if (data === "j:n" || data === "j:e") {
     const kind = data === "j:n" ? "note" : "exam";
     const markup = await categoriesMarkup(env, kind);
-    if (!markup) return ack(env, cq, "هنوز چیزی ثبت نشده");
+    if (!markup) return callbackNotice(env, chatId, "هنوز چیزی ثبت نشده.");
     await editTemp(env, chatId, msgId, `${TITLE[kind]} — دسته رو انتخاب کن:`, markup);
     return ack(env, cq);
   }
@@ -323,7 +329,7 @@ export async function handleJozveCallback(env, cq, ctx = null) {
     const kind = data[3] === "n" ? "note" : "exam";
     const cat = data.slice(5);
     const markup = await courseMarkupForCategory(env, kind, cat);
-    if (!markup) return ack(env, cq, "درسی توی این دسته نیست");
+    if (!markup) return callbackNotice(env, chatId, "درسی توی این دسته نیست.");
     await editTemp(env, chatId, msgId, `${TITLE[kind]} — ${cat}\nدرس رو انتخاب کن:`, markup);
     return ack(env, cq);
   }
@@ -339,7 +345,7 @@ export async function handleJozveCallback(env, cq, ctx = null) {
       .map((r) => r.professor)
       .filter((p) => bytes(p) <= MAX_NAME_BYTES)
       .map((p) => ({ text: p, callback_data: `${CB[kind].f}${course}|${p}` }));
-    if (!buttons.length) return ack(env, cq, "استادی برای این درس نیست");
+    if (!buttons.length) return callbackNotice(env, chatId, "استادی برای این درس نیست.");
     const cat = await categoryOf(env, course);
     await editTemp(env, chatId, msgId, `${TITLE[kind]} — ${course}\nاستاد رو انتخاب کن:`, grid(buttons, [
       { text: "بازگشت", callback_data: `jk:${kind === "note" ? "n" : "e"}:${cat}` },
@@ -359,7 +365,7 @@ export async function handleJozveCallback(env, cq, ctx = null) {
     const { results } = await env.DB.prepare(
       `SELECT channel_msg_id, title, file_name FROM ${TABLE[kind]} WHERE course = ? AND professor = ? ORDER BY id LIMIT ?`
     ).bind(course, professor, MAX_FILES_PER_SEND * 3).all();
-    if (!results.length) return ack(env, cq, "فایلی پیدا نشد");
+    if (!results.length) return callbackNotice(env, chatId, "فایلی پیدا نشد.");
 
     // سقف مشترک برای کاربر عادی (با شمارش دستور /jozve)
     const uid = cq.from && cq.from.id;
@@ -435,11 +441,11 @@ export async function handleJozveCallback(env, cq, ctx = null) {
     }
     if (ambiguous) {
       // نتیجه‌ی بعضی فایل‌ها نامشخصه: تلاش خودکار نمی‌کنیم؛ مالک با /review تصمیم می‌گیره
-      await ack(env, cq, "بعضی فایل‌ها نیاز به بررسی دارن؛ مالک خبر می‌گیره");
+      await callbackNotice(env, chatId, "بعضی فایل‌ها نیاز به بررسی دارن؛ مالک خبر می‌گیره.");
       throw new AmbiguousError(`publish:${chatId}:${msgId}`);
     }
     if (!copies && !links.length) {
-      return ack(env, cq, copyFailed ? "ارسال نشد؛ دوباره امتحان کن" : "فایلی پیدا نشد");
+      return callbackNotice(env, chatId, copyFailed ? "ارسال نشد؛ دوباره امتحان کن." : "فایلی پیدا نشد.");
     }
     // فایل فرستاده شد: منو و دستور کاربر دیگه لازم نیستن
     await closeMenu(env, chatId, msgId);
@@ -501,8 +507,9 @@ export async function handleJozveRemoveCallback(env, cq) {
   const role = await getRole(env, cq.from.id);
   if (!role) return answer();
   if (data === "jrm:n") {
+    await answer();
     await tryDeleteMessage(env, chatId, cq.message.message_id);
-    return answer();
+    return;
   }
 
   const parseRef = (raw) => {
@@ -528,9 +535,9 @@ export async function handleJozveRemoveCallback(env, cq) {
     if (!Number.isInteger(ref.id)) return answer();
     const row = await env.DB.prepare(`SELECT id FROM ${ref.table} WHERE id = ?`).bind(ref.id).first();
     if (!row) return answer("این فایل دیگه نیست");
+    await answer();
     await env.DB.prepare(`DELETE FROM ${ref.table} WHERE id = ?`).bind(ref.id).run();
     await audit(env, cq.from.id, "jozve_remove", `${ref.table}:${ref.id}`);
-    await answer("حذف شد");
     return sendMessage(env, chatId, "فایل از فهرست حذف شد.");
   }
   return answer();

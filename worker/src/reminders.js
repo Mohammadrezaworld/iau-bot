@@ -81,16 +81,17 @@ export async function handleReminderCallback(env, cq) {
   if (!(await isOwner(env, cq.from.id))) return answer();
   const [, op, id, kind] = String(cq.data || "").split(":");
   const eventId = Number(id);
+  await answer();
   const done = await env.DB.prepare("SELECT 1 AS x FROM reminder_log WHERE event_id = ? AND kind = ?").bind(eventId, `done:${kind}`).first();
-  if (done) return answer("این یادآوری قبلاً جواب گرفته");
+  if (done) return tg(env, "sendMessage", { chat_id: cq.message.chat.id, text: "این یادآوری قبلاً جواب گرفته." });
   const e = await env.DB.prepare("SELECT * FROM events WHERE id = ?").bind(eventId).first();
-  if (!e || e.archived) return answer("این رویداد دیگه فعال نیست");
+  if (!e || e.archived) return tg(env, "sendMessage", { chat_id: cq.message.chat.id, text: "این رویداد دیگه فعال نیست." });
   if (op === "s") {
     const groupId = await getSetting(env, "group_id", "");
     await tg(env, "sendMessage", { chat_id: groupId, text: groupText(e, tehranToday()), disable_web_page_preview: true });
     await mark(env, eventId, `done:${kind}`);
-    return answer("به گروه ارسال شد");
+    return tg(env, "sendMessage", { chat_id: cq.message.chat.id, text: "یادآوری به گروه ارسال شد." });
   }
   await mark(env, eventId, `done:${kind}`);
-  return answer("ارسال نشد");
+  return tg(env, "sendMessage", { chat_id: cq.message.chat.id, text: "یادآوری ارسال نشد." });
 }

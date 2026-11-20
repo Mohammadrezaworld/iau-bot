@@ -65,8 +65,9 @@ export async function handleKeywordCallback(env, cq) {
   if (!(await isFullAdmin(env, cq.from.id))) return answer("این کار برای سطح دسترسی شما نیست.");
 
   if (data === "kw:n") {
+    await answer();
     await tryDeleteMessage(env, chatId, cq.message.message_id);
-    return answer();
+    return;
   }
 
   if (data.startsWith("kw:c:")) {
@@ -87,9 +88,9 @@ export async function handleKeywordCallback(env, cq) {
     const list = await keywordsList(env);
     const target = list.find((k) => k === w);
     if (!target) return answer("این کلمه دیگه نیست");
+    await answer();
     await save(env, list.filter((k) => k !== target), `حذف کلمه‌ی «${target}»`);
     await audit(env, cq.from.id, "keyword_remove", target);
-    await answer("حذف شد");
     return sendMessage(env, chatId, `کلمه «${target}» حذف شد.`);
   }
 

@@ -207,6 +207,7 @@ async function dispatchUpdate(env, update, ctx = null) {
     if (data.startsWith("sb:")) {
       // دسته‌ی اسکرپ: فقط مالک در پیوی
       if (cq.message && cq.message.chat && cq.message.chat.type === "private" && (await isOwner(env, cq.from.id))) {
+        await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
         return handleBatchCallback(env, cq, ctx);
       }
       return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
@@ -221,18 +222,22 @@ async function dispatchUpdate(env, update, ctx = null) {
     if (data.startsWith("rv:")) {
       // فهرست بررسی: فقط مالک
       if (cq.message && cq.message.chat && cq.message.chat.type === "private" && (await isOwner(env, cq.from.id))) {
+        await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
         return handleReviewCallback(env, cq);
       }
       return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
     }
     // یادآوری رویداد: فقط مالک؛ ارسال به گروه با تأیید او
     if (data.startsWith("rm2:")) return handleReminderCallback(env, cq);
-    if (!cq.message || !cq.message.chat) return;
+    if (!cq.message || !cq.message.chat) return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
     if (data.startsWith("d:") && cq.message.chat.type === "private") {
       // منوی شخصی جزوه‌ها در پیوی (کاربر عادی و ادمین)
       await handleDmCallback(env, cq);
     } else if (data.startsWith("j:") || data.startsWith("jk:")) {
-      if (await isOurGroup(env, cq.message.chat.id)) await handleJozveCallback(env, cq, ctx);
+      if (await isOurGroup(env, cq.message.chat.id)) {
+        await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+        await handleJozveCallback(env, cq, ctx);
+      }
     } else if (data.startsWith("m:")) {
       // منوی /metro: در پیوی (کاربر عضو) یا گروه قدیمی؛ فقط برای درخواست‌کننده (داخل handler چک می‌شه)
       if (cq.message.chat.type === "private") {
@@ -243,14 +248,21 @@ async function dispatchUpdate(env, update, ctx = null) {
       }
     } else if (data === "x:c" && cq.message.chat.type === "private" && (await isAdmin(env, cq.from.id))) {
       // بستن لیست‌های حذف و ویرایش در DM
+      await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
       await tryDeleteMessage(env, cq.message.chat.id, cq.message.message_id);
       await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
     } else if (cq.message.chat.type === "private" && (await isAdmin(env, cq.from.id))) {
-      if (data === "st:r") return handleStatusRefresh(env, cq);
+      if (data === "st:r") {
+        await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+        return handleStatusRefresh(env, cq);
+      }
       if (data.startsWith("am:")) {
         // دکمه‌ی منوی ادمین: همان دستور متنی از مسیر عادی پیام اجرا می‌شه (مجوز مالک و ادمین همون‌جا چک می‌شه)
         const item = ADMIN_MENU[Number(data.slice(3))];
         if (item) {
+          if (!item.owner || String(cq.from.id) === String(env.OWNER_ID)) {
+            await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+          }
           const nowMs = Date.now();
           await dispatchUpdate(env, { message: { message_id: -nowMs, date: Math.floor(nowMs / 1000), chat: cq.message.chat, from: cq.from, text: item.cmd } });
         }
@@ -261,6 +273,10 @@ async function dispatchUpdate(env, update, ctx = null) {
       else if (data.startsWith("hol:")) await handleHolidayCallback(env, cq);
       else if (data.startsWith("jrm:")) await handleJozveRemoveCallback(env, cq);
       else await handleCallback(env, cq, ctx);
+    }
+    // Callback نامرتبط یا ردشده هم باید spinner تلگرام را ببندد؛ d:* پیوی عمداً خارج از scope این PR است.
+    if (!(data.startsWith("d:") && cq.message.chat.type === "private")) {
+      await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
     }
     return;
   }
@@ -296,8 +312,13 @@ async function handleTelegramWebhook(request, env) {
   }
 
   const update = await request.json().catch(() => null);
-  // ساعت سکوت گروه: هیچ پاسخ یا واکنشی به پیام/دکمه‌ی گروه داده نمی‌شه (رفتار فعلی؛ تغییر نکرده)
+  const cq = update && update.callback_query;
+  const callbackChat = cq && cq.message && cq.message.chat;
+  // ساعت سکوت گروه: پیام یا واکنش در گروه نمی‌فرستیم؛ j:* در ساعت فعال پس از این guard ack می‌شود.
   if (update && (await groupSilenced(env, update))) return new Response("ok", { status: 200 });
+  if (cq && cq.id && callbackChat && callbackChat.type !== "private" && (String(cq.data || "").startsWith("j:") || String(cq.data || "").startsWith("jk:"))) {
+    await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+  }
 
   const id = update && Number.isSafeInteger(update.update_id) ? update.update_id : null;
   let ctx = null;
@@ -407,7 +428,8 @@ async function handleReviewCallback(env, cq) {
   else if (action === "a") text = await resolveUpdate(env, id, "applied");
   else if (action === "n") text = await resolveUpdate(env, id, "not_applied");
   else text = "نامعتبر";
-  return tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: String(text).slice(0, 190), show_alert: true });
+  await tg(env, "sendMessage", { chat_id: cq.message.chat.id, text: String(text).slice(0, 1000) });
+  return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
 }
 
 export default {

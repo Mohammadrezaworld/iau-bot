@@ -7,11 +7,13 @@ const { processReminders, handleReminderCallback, groupText } = await import(WOR
 const e5Stub = { title: "تست", start_date: "2026-11-30" };
 const raw = new DatabaseSync(":memory:");
 raw.exec(readFileSync(WORKER + "schema.sql", "utf8"));
-const db = { prepare(sql) { const st = raw.prepare(sql); return { bind: (...a) => ({ first: async () => st.get(...a) ?? null, all: async () => ({ results: st.all(...a) }), run: async () => { st.run(...a); return { meta: { changes: 1 } }; } }), first: async () => st.get() ?? null, all: async () => ({ results: st.all() }), run: async () => { st.run(); return {}; } }; } };
+const order = [];
+const db = { prepare(sql) { const st = raw.prepare(sql); return { bind: (...a) => ({ first: async () => { order.push({ m: "db:first", sql }); return st.get(...a) ?? null; }, all: async () => { order.push({ m: "db:all", sql }); return { results: st.all(...a) }; }, run: async () => { order.push({ m: "db:run", sql }); st.run(...a); return { meta: { changes: 1 } }; } }), first: async () => { order.push({ m: "db:first", sql }); return st.get() ?? null; }, all: async () => { order.push({ m: "db:all", sql }); return { results: st.all() }; }, run: async () => { order.push({ m: "db:run", sql }); st.run(); return {}; } }; } };
 const sent = []; const answers = [];
 globalThis.fetch = async (u, o) => {
   const m = String(u).split("/").pop(); const b = o && o.body ? JSON.parse(o.body) : {};
-  if (m === "answerCallbackQuery") { answers.push(b.text || ""); return Response.json({ ok: true, result: true }); }
+  if (m === "answerCallbackQuery") { order.push({ m }); answers.push(b.text || ""); return Response.json({ ok: true, result: true }); }
+  order.push({ m, chat_id: b.chat_id });
   sent.push({ m, ...b });
   return Response.json({ ok: true, result: { message_id: 1 } });
 };
@@ -71,21 +73,25 @@ ok("nothing sent to the group before owner approval", !sent.some((x) => String(x
 // تأیید مالک
 const cb = (uid, data) => ({ id: "c" + Math.random(), data, from: { id: uid }, message: { chat: { id: 5 } } });
 const groupMsgs = () => sent.filter((x) => String(x.chat_id) === "-100555");
+const ownerMsgs = () => sent.filter((x) => String(x.chat_id) === "5");
 sent.length = 0; answers.length = 0;
 Date.now = () => Date.UTC(Y, N, 14, 10 - 3, 0 - 30);
 await handleReminderCallback(env, cb(7, `rm2:s:${ids.e3}:now`));
 ok("non-owner tap: nothing sent to the group", groupMsgs().length === 0);
+order.length = 0;
 await handleReminderCallback(env, cb(5, `rm2:s:${ids.e3}:now`));
-ok("owner approve: sent to the group with the title", groupMsgs().length === 1 && groupMsgs()[0].text.includes("عادی دیر") && groupMsgs()[0].text.includes("فردا"));
+const reminderAckAt = order.findIndex((x) => x.m === "answerCallbackQuery");
+const reminderReadAt = order.findIndex((x) => x.m === "db:first" && /reminder_log/.test(x.sql));
+ok("owner approve: ack precedes D1 reads and group send; result remains visible", groupMsgs().length === 1 && groupMsgs()[0].text.includes("عادی دیر") && groupMsgs()[0].text.includes("فردا") && ownerMsgs().some((m) => m.text.includes("یادآوری به گروه ارسال شد")) && reminderAckAt >= 0 && reminderReadAt > reminderAckAt && order.findIndex((x) => String(x.chat_id) === "-100555") > reminderAckAt);
 await handleReminderCallback(env, cb(5, `rm2:s:${ids.e3}:now`));
-ok("second tap on the same reminder: not sent again", groupMsgs().length === 1 && answers.includes("این یادآوری قبلاً جواب گرفته"));
+ok("second tap on the same reminder: not sent again, result remains visible", groupMsgs().length === 1 && ownerMsgs().some((m) => m.text === "این یادآوری قبلاً جواب گرفته."));
 await handleReminderCallback(env, cb(5, `rm2:r:${ids.e4}:now`));
-ok("owner reject: nothing sent to the group", groupMsgs().length === 1 && answers.includes("ارسال نشد"));
+ok("owner reject: nothing sent to the group and owner sees the result", groupMsgs().length === 1 && ownerMsgs().some((m) => m.text === "یادآوری ارسال نشد."));
 
 // بایگانی: دکمه‌ی قدیمی رویداد بایگانی‌شده، «دیگه فعال نیست» می‌گوید
 raw.exec(`UPDATE events SET archived = 1 WHERE id = ${ids.e2}`);
 sent.length = 0; answers.length = 0;
 await handleReminderCallback(env, cb(5, `rm2:s:${ids.e2}:pre1`));
-ok("archived event button: says it is no longer active, nothing sent", answers.includes("این رویداد دیگه فعال نیست") && groupMsgs().length === 0);
+ok("archived event button: says it is no longer active, nothing sent", ownerMsgs().some((m) => m.text === "این رویداد دیگه فعال نیست.") && groupMsgs().length === 0);
 
 console.log(fails ? `FAILED ${fails}` : "ALL PASSED"); process.exit(fails ? 1 : 0);

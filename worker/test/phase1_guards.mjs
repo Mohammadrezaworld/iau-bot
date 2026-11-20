@@ -4,13 +4,15 @@ import { readFileSync } from "fs";
 import { fileURLToPath as __ftp } from "node:url";
 const WORKER = __ftp(new URL("..", import.meta.url));
 const { processReminders } = await import(WORKER + "src/reminders.js");
-const { handleMetroUploadCallback } = await import(WORKER + "src/metro.js");
+const { handleMetroUploadCallback, handleMetroCallback } = await import(WORKER + "src/metro.js");
 const raw = new DatabaseSync(":memory:");
 raw.exec(readFileSync(WORKER + "schema.sql", "utf8"));
-const db = { prepare(sql) { const st = raw.prepare(sql); return { bind: (...a) => ({ first: async () => st.get(...a) ?? null, all: async () => ({ results: st.all(...a) }), run: async () => { st.run(...a); return { meta: { changes: 1 } }; } }), first: async () => st.get() ?? null, all: async () => ({ results: st.all() }), run: async () => { st.run(); return {}; } }; } };
+const events = [];
+const db = { prepare(sql) { const st = raw.prepare(sql); return { bind: (...a) => ({ first: async () => { events.push(`db:${sql}`); return st.get(...a) ?? null; }, all: async () => ({ results: st.all(...a) }), run: async () => { events.push(`db:${sql}`); st.run(...a); return { meta: { changes: 1 } }; } }), first: async () => st.get() ?? null, all: async () => ({ results: st.all() }), run: async () => { events.push(`db:${sql}`); st.run(); return {}; } }; } };
 const sent = [];
 globalThis.fetch = async (u, o) => {
   const m = String(u).split("/").pop(); const b = o && o.body ? JSON.parse(o.body) : {};
+  events.push(`tg:${m}`);
   sent.push({ m, ...b });
   return Response.json({ ok: true, result: { message_id: 1 } });
 };
@@ -56,7 +58,16 @@ ok("B1: content-level admin cannot confirm", versions() === 0);
 
 raw.exec("INSERT INTO admin_roles (user_id, role) VALUES (79, 'full')");
 pid = pending(79);
+events.length = 0; sent.length = 0;
 await handleMetroUploadCallback(env, cq(pid, 79));
-ok("B1: full-level admin confirm still works", versions() === 1);
+const uploadAckAt = events.indexOf("tg:answerCallbackQuery");
+const uploadWriteAt = events.findIndex((e) => e.startsWith("db:INSERT INTO metro_versions"));
+ok("B1: full-level admin confirmation acknowledges before activating table", versions() === 1 && uploadAckAt >= 0 && uploadWriteAt > uploadAckAt && sent.some((m) => m.m === "sendMessage"));
+
+// ۴. مسیر مبدأ/مقصد: ack پیش از ویرایش پیام تلگرام
+const vId = raw.prepare("INSERT INTO metro_versions (created_utc, is_active, data_json) VALUES (1, 1, ?)").run(JSON.stringify({ kind: "regular", stations: ["A", "B"] })).lastInsertRowid;
+events.length = 0; sent.length = 0;
+await handleMetroCallback(env, { id: "metro-edit-ack-test", from: { id: 79 }, data: `m:s:79:${vId}`, message: { message_id: 888, chat: { id: -100555, type: "supergroup" } } });
+ok("B2: metro callback acknowledges before editing its menu", events.indexOf("tg:answerCallbackQuery") >= 0 && events.indexOf("tg:answerCallbackQuery") < events.indexOf("tg:editMessageText") && sent.some((m) => m.m === "editMessageText"));
 
 console.log(fails ? `FAILED ${fails}` : "ALL PASSED"); process.exit(fails ? 1 : 0);

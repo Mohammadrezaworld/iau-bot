@@ -61,8 +61,9 @@ export async function handleHolidayCallback(env, cq) {
 
   if (!(await isFullAdmin(env, cq.from.id))) return answer("این کار برای سطح دسترسی شما نیست.");
   if (data === "hol:n") {
+    await answer();
     await tryDeleteMessage(env, chatId, cq.message.message_id);
-    return answer();
+    return;
   }
 
   if (data.startsWith("hol:c:")) {
@@ -79,10 +80,10 @@ export async function handleHolidayCallback(env, cq) {
   }
 
   if (data.startsWith("hol:y:")) {
-    const removed = await removeHoliday(env, cq.from.id, data.slice(6));
-    await answer(removed === null ? "این تاریخ دیگه نیست" : "حذف شد");
-    if (removed === null) return;
-    return sendMessage(env, chatId, `تعطیلی ${faDate(data.slice(6))} حذف شد.`);
+    await answer();
+    const iso = data.slice(6);
+    const removed = await removeHoliday(env, cq.from.id, iso);
+    return sendMessage(env, chatId, removed === null ? "این تاریخ دیگه نیست." : `تعطیلی ${faDate(iso)} حذف شد.`);
   }
 
   return answer();

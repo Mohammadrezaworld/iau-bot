@@ -512,15 +512,14 @@ export async function handleBatchCallback(env, cq, ctx) {
     else if (action === "r") text = await rejectBatch(env, bid);
     else text = "نامعتبر";
   } catch (err) {
+    // Router callback را زود ack کرده؛ هشدار toast دیگر دیده نمی‌شود، پس نتیجه را روی پیش‌نمایش نگه می‌داریم.
+    await showBatchResult(env, cq.message, "نتیجه نامشخص؛ در /review دیده می‌شه");
     await tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: "نتیجه نامشخص؛ در /review دیده می‌شه", show_alert: true }).catch(() => {});
     throw err;
   }
-  // تأیید یا رد: نتیجه زیر همان پیش‌نمایش نوشته می‌شه و دکمه‌ها برداشته می‌شن (بدون پنجره‌ی هشدار)
-  if (action === "s" || action === "r") {
-    await showBatchResult(env, cq.message, text);
-    return tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: String(text).slice(0, 190) });
-  }
-  return tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: String(text).slice(0, 190), show_alert: true });
+  // نتیجه زیر همان پیش‌نمایش نوشته می‌شه؛ ack زودهنگام پیشاپیش spinner تلگرام را بسته.
+  await showBatchResult(env, cq.message, text);
+  return tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: String(text).slice(0, 190) });
 }
 
 async function showBatchResult(env, msg, text) {
@@ -532,4 +531,3 @@ async function showBatchResult(env, msg, text) {
     entities: msg.entities,
   }).catch(() => {});
 }
-

@@ -138,12 +138,16 @@ export async function handleScrapeSettingsCallback(env, cq, ctx) {
   const chatId = cq.message.chat.id;
   const parts = String(cq.data).split(":");
   const action = parts[1];
-  const ack = (text) => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: String(text).slice(0, 190), show_alert: true });
+  const ack = (text = "") => tg(env, "answerCallbackQuery", {
+    callback_query_id: cq.id,
+    ...(text ? { text: String(text).slice(0, 190), show_alert: true } : {}),
+  });
   if (!owner) return ack("");
-  const mode = await scrapeMode(env);
   const btn = (text, data) => ({ text, callback_data: data });
-  if (["m", "manual", "stop"].includes(action)) await clearAutoToken(env);
   if (action === "locked" || (action === "auto" && !autoAllowed(env))) return ack(LOCKED_TEXT);
+  await ack("");
+  const mode = await scrapeMode(env);
+  if (["m", "manual", "stop"].includes(action)) await clearAutoToken(env);
 
   if (action === "r") {
     // بروزرسانی پنل: همان پیام با وضعیت تازه ویرایش می‌شود (توکن تأیید خودکار دست‌نخورده می‌ماند)
@@ -153,7 +157,7 @@ export async function handleScrapeSettingsCallback(env, cq, ctx) {
       // بدون تغییر: تلگرام «not modified» می‌دهد؛ پنل از قبل تازه است
       if (!/message is not modified/.test(String(e))) throw e;
     }
-    return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+    return;
   }
   if (action === "m") {
     return tg(env, "sendMessage",{ chat_id: chatId, text: await panelText(env), reply_markup: panelMarkup(await scrapeMode(env), env), disable_web_page_preview: true });
@@ -164,40 +168,40 @@ export async function handleScrapeSettingsCallback(env, cq, ctx) {
         chat_id: chatId,
         text: "از توقف خارج می‌شی. پست‌های معوق چه شوند؟\n• فقط پست‌های جدید: معوق‌ها کنار گذاشته می‌شن و منتشر نمی‌شن.\n• پیشنهاد معوق‌ها: معوق‌ها برای تأیید تو پیش‌نمایش می‌شن (خودکار منتشر نمی‌شن).",
         reply_markup: { inline_keyboard: [[btn("فقط پست‌های جدید", "ss:go:manual:new")], [btn("پیشنهاد معوق‌ها برای تأیید", "ss:go:manual:sug")], [btn("انصراف", "ss:m")]] },
-      }).then(() => ack("انتخاب کن"));
+      });
     }
     const r = await changeMode(env, cq.from.id, action);
-    return ack(r.text);
+    return tg(env, "sendMessage", { chat_id: chatId, text: r.text });
   }
   if (action === "auto") {
     const consequences = "ارسال خودکار:\n• پست‌های جدیدی که بعد از فعال‌سازی دیده می‌شن، بدون تأیید به گروه می‌روند.\n• دسته‌های منتظر قبلی و پست‌های معوق خودکار منتشر نمی‌شوند.\n• در ساعت سکوت ارسالی نیست و توقف انتشار همه‌ی ارسال‌ها را متوقف می‌کند.";
-    if (mode === "auto") return ack("همین حالت از قبل فعال است.");
+    if (mode === "auto") return tg(env, "sendMessage", { chat_id: chatId, text: "همین حالت از قبل فعال است." });
     const t = await issueAutoToken(env);
     if (mode === "stop") {
       return tg(env, "sendMessage", {
         chat_id: chatId,
         text: `${consequences}\n\nاز توقف خارج می‌شی. معوق‌ها چه شوند؟`,
         reply_markup: { inline_keyboard: [[btn("تأیید: خودکار، فقط پست‌های جدید", `ss:go:auto:new:${t}`)], [btn("تأیید: خودکار، معوق‌ها برای تأیید", `ss:go:auto:sug:${t}`)], [btn("انصراف", "ss:m")]] },
-      }).then(() => ack("تأیید دوم لازم است"));
+      });
     }
     return tg(env, "sendMessage", {
       chat_id: chatId,
       text: `${consequences}\n\nبرای فعال‌سازی یک بار دیگر تأیید کن.`,
       reply_markup: { inline_keyboard: [[btn("تأیید دوم: فعال‌سازی خودکار", `ss:autoy:${t}`)], [btn("انصراف", "ss:m")]] },
-    }).then(() => ack("تأیید دوم لازم است"));
+    });
   }
   if (action === "autoy") {
-    if (!(await consumeAutoToken(env, parts[2]))) return ack("این تأیید منقضی یا استفاده شده. دوباره از /scrape_settings شروع کن.");
+    if (!(await consumeAutoToken(env, parts[2]))) return tg(env, "sendMessage", { chat_id: chatId, text: "این تأیید منقضی یا استفاده شده. دوباره از /scrape_settings شروع کن." });
     const r = await changeMode(env, cq.from.id, "auto");
-    return ack(r.text);
+    return tg(env, "sendMessage", { chat_id: chatId, text: r.text });
   }
   if (action === "go") {
     const target = parts[2];
     const backlog = parts[3];
-    if (mode !== "stop") return ack("این گزینه الان لازم نیست.");
-    if (target === "auto" && !(await consumeAutoToken(env, parts[4]))) return ack("این تأیید منقضی یا استفاده شده. دوباره از /scrape_settings شروع کن.");
+    if (mode !== "stop") return tg(env, "sendMessage", { chat_id: chatId, text: "این گزینه الان لازم نیست." });
+    if (target === "auto" && !(await consumeAutoToken(env, parts[4]))) return tg(env, "sendMessage", { chat_id: chatId, text: "این تأیید منقضی یا استفاده شده. دوباره از /scrape_settings شروع کن." });
     const r = await changeMode(env, cq.from.id, target, backlog);
-    return ack(r.text);
+    return tg(env, "sendMessage", { chat_id: chatId, text: r.text });
   }
-  return ack("نامعتبر");
+  return tg(env, "sendMessage", { chat_id: chatId, text: "این دکمه معتبر نیست." });
 }

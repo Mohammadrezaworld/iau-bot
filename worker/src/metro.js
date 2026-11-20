@@ -161,6 +161,7 @@ export async function handleMetroCallback(env, cq) {
   if (String(cq.from.id) !== uidStr) return ack(env, cq, "این دکمه‌ها برای درخواست‌کننده‌ی /metro هستند.");
 
   if (action === "x") {
+    await ack(env, cq);
     await tryDeleteMessage(env, chatId, msgId);
     await forgetMsg(env, chatId, msgId);
     return ack(env, cq);
@@ -175,15 +176,18 @@ export async function handleMetroCallback(env, cq) {
   };
 
   if (action === "s") {
+    await ack(env, cq);
     await editTemp(env, chatId, msgId, originText(v), originMarkup(uidStr, v));
   } else if (action === "o") {
     const i = idx(x);
     if (i === null) return ack(env, cq);
+    await ack(env, cq);
     await editTemp(env, chatId, msgId, destText(v, i), destMarkup(uidStr, v, i));
   } else if (action === "d") {
     const i = idx(x);
     const j = idx(y);
     if (i === null || j === null || i === j) return ack(env, cq);
+    await ack(env, cq);
     const now = tehranNow();
     const t = tripsFor(v.data, i, j, now.nowMin, 3);
     await editTemp(env, chatId, msgId, resultText(v, i, j, t, now.nowMin, now.iso), resultMarkup(uidStr, v));
@@ -266,6 +270,7 @@ export async function handleMetroUploadCallback(env, cq) {
 
   if (action !== "ok") return ack(env, cq, "لغو شد");
 
+  await ack(env, cq);
   const data = JSON.parse(p.payload);
   const row = await env.DB.prepare(
     "INSERT INTO metro_versions (created_utc, is_active, data_json) VALUES (?, 1, ?) RETURNING id"

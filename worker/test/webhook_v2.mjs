@@ -16,24 +16,25 @@ INSERT INTO processed_updates VALUES (2001,'done',1,1791966000),(2002,'failed',1
 raw.exec(SCHEMA);
 
 const worker = (await import(WORKER + "src/index.js")).default;
-const { webhookSecret } = await import(WORKER + "src/telegram.js");
+const { webhookSecret, tg } = await import(WORKER + "src/telegram.js");
 const { claimUpdate, markOutcome } = await import(WORKER + "src/updates.js");
 const { claimExternal, finishExternal, dbEffect, LeaseLostError } = await import(WORKER + "src/effects.js");
 const { handleJozveCallback } = await import(WORKER + "src/jozve.js");
 
 let failDb = null; // تابع sql → true یعنی این دستور خطا بده
+let trace = null;
 const chk = (sql) => { if (failDb && failDb(sql)) throw new Error("db unavailable"); };
 function mk(sql, args = []) {
   const o = {
     _sql: sql, _args: args,
     bind: (...a) => mk(sql, a),
-    first: async () => { chk(sql); return raw.prepare(sql).get(...args) ?? null; },
-    all: async () => { chk(sql); return { results: raw.prepare(sql).all(...args) }; },
+    first: async () => { chk(sql); trace && trace.push(`db:first:${sql}|${JSON.stringify(args)}`); return raw.prepare(sql).get(...args) ?? null; },
+    all: async () => { chk(sql); trace && trace.push(`db:all:${sql}|${JSON.stringify(args)}`); return { results: raw.prepare(sql).all(...args) }; },
     run: async () => runSync(o),
   };
   return o;
 }
-function runSync(o) { chk(o._sql); const r = raw.prepare(o._sql).run(...o._args); return { meta: { changes: Number(r.changes) } }; }
+function runSync(o) { chk(o._sql); trace && trace.push(`db:run:${o._sql}|${JSON.stringify(o._args)}`); const r = raw.prepare(o._sql).run(...o._args); return { meta: { changes: Number(r.changes) } }; }
 const db = {
   prepare: (sql) => mk(sql),
   // batch = تراکنش واقعی: همه یا هیچ
@@ -53,6 +54,7 @@ globalThis.fetch = async (u, o) => {
   const method = String(u).split("/").pop();
   const b = o && o.body ? JSON.parse(o.body) : {};
   calls.push(method);
+  trace && trace.push(`tg:${method}`);
   if (method === "getChatMember") return ok({ status: "member" });
   if (method === "copyMessage") {
     if (rules.copy === "refuse") return Response.json({ ok: false, error_code: 400, description: "message not found" }, { status: 400 });
@@ -133,6 +135,7 @@ raw.exec("INSERT INTO jozve_files (course, professor, title, file_name, file_siz
 rules.copy = "network"; reset();
 r = await hook(cbq(3001, "j:f:ریاضی|دکتر الف", 81));
 ok_("C1 network error on copy: needs_review(ambiguous), no retry, no copy", r.status === 200 && row(3001).state === "needs_review" && row(3001).reason === "ambiguous" && copies.length === 0);
+ok_("C1 ambiguous result remains visible after the early callback ack", calls[0] === "answerCallbackQuery" && sentTo(-100555).some((m) => m.text.includes("بعضی فایل‌ها نیاز به بررسی دارن")));
 ok_("C1 effect is intent (unknown outcome)", eff("publish:-100555:ریاضی|دکتر الف|a.pdf")?.state === "intent");
 rules.copy = "ok"; reset();
 r = await hook({ update_id: 3002, message: { message_id: 1, chat: { id: 5, type: "private" }, from: { id: 5 }, text: "/retry_update 3001" } });
@@ -169,6 +172,28 @@ ok_("C5 refused copy: effect failed (not unknown), update completes", r.status =
 rules.copy = "ok"; reset();
 r = await hook(cbq(3402, "j:f:ریاضی|دکتر ه", 87));
 ok_("C5 later confirmation copies once and marks done", copies.length === 1 && eff("publish:-100555:ریاضی|دکتر ه|e.pdf").state === "done");
+
+// C6: spinner بلافاصله بسته می‌شود، پیش از ویرایش منوی جزوه
+reset();
+trace = [];
+r = await hook(cbq(3455, "j:b", 88));
+const jozveAckAt = trace.indexOf("tg:answerCallbackQuery");
+const groupLookupAts = trace.reduce((a, x, i) => { if (x === 'db:first:SELECT value FROM settings WHERE key = ?|["group_id"]') a.push(i); return a; }, []);
+ok_("C6 jozve callback acknowledges after quiet-hours guard, before dispatch lookup/edit", r.status === 200 && calls[0] === "answerCallbackQuery" && calls.includes("editMessageText") && groupLookupAts.length >= 2 && groupLookupAts[0] < jozveAckAt && jozveAckAt < groupLookupAts[1]);
+trace = null;
+
+// C7: منوی ادمین، ack پیش از اجرای دستور و پاسخ راهنما باقی می‌ماند.
+reset();
+r = await hook({ update_id: 3456, callback_query: { id: "admin-menu-ack-test", from: { id: 5 }, data: "am:19", message: { message_id: 51, chat: { id: 5, type: "private" } } } });
+ok_("C7 admin menu acknowledges before command and keeps its reply", r.status === 200 && calls[0] === "answerCallbackQuery" && sentTo(5).some((m) => m.text.includes("دستورهای ادمین")));
+
+// C8/C9: status refresh/edit و close/delete هم spinner را پیش از تماس تلگرام می‌بندند.
+reset();
+r = await hook({ update_id: 3457, callback_query: { id: "status-refresh-ack-test", from: { id: 5 }, data: "st:r", message: { message_id: 52, chat: { id: 5, type: "private" }, text: "وضعیت" } } });
+ok_("C8 status refresh acknowledges before editing status", r.status === 200 && calls[0] === "answerCallbackQuery" && calls.includes("editMessageText"));
+reset();
+r = await hook({ update_id: 3458, callback_query: { id: "close-list-ack-test", from: { id: 5 }, data: "x:c", message: { message_id: 53, chat: { id: 5, type: "private" } } } });
+ok_("C9 close-list callback acknowledges before deleting message", r.status === 200 && calls[0] === "answerCallbackQuery" && calls.includes("deleteMessage"));
 
 // ---------- د) ثبت DB با کلید پایدار ----------
 // D1: خطای ارسال تأیید بعد از ثبت → retry ردیف دوم نمی‌سازه
@@ -281,6 +306,30 @@ raw.exec(`UPDATE update_queue SET at_utc=${NOW - 700} WHERE update_id=9180`);
 reset(); await hook(ownerMsg(9181, "/review"));
 const reviewA6 = sentTo(5).at(-1)?.text || "";
 ok_("A6 /review shows wizard effect row id and key", reviewA6.includes(`ردیف DB #${a6Effect.row_id}`) && reviewA6.includes(`کلید wizard:5:call:${sidA6}`));
+
+// T1: پاسخ callback برای یک query تکراری دوباره به Telegram فرستاده نمی‌شود.
+reset();
+await tg(env, "answerCallbackQuery", { callback_query_id: "ack-cache-test" });
+await tg(env, "answerCallbackQuery", { callback_query_id: "ack-cache-test" });
+ok_("T1 duplicate answerCallbackQuery is deduplicated", calls.filter((m) => m === "answerCallbackQuery").length === 1);
+
+// T2: فقط خطای صریح 400 برای query منقضی/نامعتبر بی‌اثر می‌شود.
+const savedFetch = globalThis.fetch;
+let staleAckCalls = 0;
+globalThis.fetch = async () => {
+  staleAckCalls++;
+  return Response.json({ ok: false, error_code: 400, description: "Bad Request: query is too old and response timeout expired or query ID is invalid" }, { status: 400 });
+};
+const staleAckResult = await tg(env, "answerCallbackQuery", { callback_query_id: "stale-ack-test" });
+globalThis.fetch = savedFetch;
+ok_("T2 explicit stale callback 400 is swallowed without retry", staleAckResult === null && staleAckCalls === 1);
+
+let otherAckError = null;
+globalThis.fetch = async () => Response.json({ ok: false, error_code: 400, description: "Bad Request: unrelated callback failure" }, { status: 400 });
+try { await tg(env, "answerCallbackQuery", { callback_query_id: "other-ack-error-test" }); }
+catch (err) { otherAckError = err; }
+globalThis.fetch = savedFetch;
+ok_("T3 unrelated callback 400 still fails explicitly", otherAckError?.refused === true && /unrelated callback failure/.test(otherAckError.message));
 
 console.log(fails === 0 ? "ALL PASS" : `${fails} FAILED`);
 process.exit(fails ? 1 : 0);
