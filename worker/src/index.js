@@ -30,6 +30,19 @@ const nowUtc = () => Math.floor(Date.now() / 1000);
 
 const FLOOD_LIMIT = 5;
 
+// منوی DM باید spinner را ببندد، حتی اگر update بعداً منتظر صف D1 بماند.
+async function acknowledgeDmCallbackEarly(env, cq) {
+  try {
+    return await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+  } catch (err) {
+    if (err && err.refused && /query is too old|response timeout expired|query id is invalid/i.test(err.message || "")) {
+      console.warn("dm_callback_ack_expired");
+      return null;
+    }
+    throw err;
+  }
+}
+
 // مشخص می‌کنه پست بله جدیده (برای ارسال) یا قدیمی/بی‌تاریخ (فقط ثبت می‌شه)
 function baleCategory(p, today) {
   if (!p.post_date) return "unknown";
@@ -314,10 +327,11 @@ async function handleTelegramWebhook(request, env) {
   const update = await request.json().catch(() => null);
   const cq = update && update.callback_query;
   const callbackChat = cq && cq.message && cq.message.chat;
-  // ساعت سکوت گروه: پیام یا واکنش در گروه نمی‌فرستیم؛ همه‌ی callbackها را بعد از این guard و پیش از صف جواب می‌دهیم.
+  // ساعت سکوت گروه حفظ می‌شود؛ پس از guard، callbackها پیش از صف جواب داده می‌شوند.
   if (update && (await groupSilenced(env, update))) return new Response("ok", { status: 200 });
   const isPrivateDmMenu = callbackChat?.type === "private" && String(cq?.data || "").startsWith("d:");
   if (cq?.id && !isPrivateDmMenu) await acknowledgeCallbackEarly(env, cq);
+  if (cq?.id && isPrivateDmMenu) await acknowledgeDmCallbackEarly(env, cq);
 
   const id = update && Number.isSafeInteger(update.update_id) ? update.update_id : null;
   let ctx = null;
