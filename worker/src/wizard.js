@@ -176,7 +176,7 @@ async function handleEditText(env, message, sess, text) {
 
 // دکمه‌ها: w:skip, w:kind:<k>, w:ok, w:stop (لغوِ ویزارد)، w:cancel (لغوِ عمومی بدون جلسه)، دسته: w:cat:<نام>، ویرایش: ed:p:<type>:<id> و ed:f:<type>:<id>:<field>
 // و حذف: rm:<type>:<id> و rmy:<type>:<id>
-export async function handleCallback(env, cq) {
+export async function handleCallback(env, cq, ctx = null) {
   const userId = cq.from.id;
   const chatId = cq.message.chat.id;
   const data = cq.data || "";
@@ -285,13 +285,13 @@ export async function handleCallback(env, cq) {
     let eff;
     if (sess.flow === "event") {
       eff = await dbEffect(env, opKey, "events",
-        { table: "events", cols: ["start_date", "end_date", "title", "kind"], vals: [d.start, d.end || d.start, d.title, d.kind] }, `event ${d.start} ${d.title}`);
+        { table: "events", cols: ["start_date", "end_date", "title", "kind"], vals: [d.start, d.end || d.start, d.title, d.kind] }, `event ${d.start} ${d.title}`, ctx?.updateId ?? null);
     } else if (sess.flow === "call") {
       eff = await dbEffect(env, opKey, "contacts",
-        { table: "contacts", cols: ["category", "name", "number", "note"], vals: [d.category, d.name, d.number, d.note || ""] }, `call ${d.category} | ${d.name}`);
+        { table: "contacts", cols: ["category", "name", "number", "note"], vals: [d.category, d.name, d.number, d.note || ""] }, `call ${d.category} | ${d.name}`, ctx?.updateId ?? null);
     } else {
       eff = await dbEffect(env, opKey, "resources",
-        { table: "resources", cols: ["category", "title", "url", "note"], vals: [d.category, d.title, d.url, d.note || ""] }, `link ${d.category} | ${d.title}`);
+        { table: "resources", cols: ["category", "title", "url", "note"], vals: [d.category, d.title, d.url, d.note || ""] }, `link ${d.category} | ${d.title}`, ctx?.updateId ?? null);
     }
     if (!eff.created) {
       await clearSession(env, userId);

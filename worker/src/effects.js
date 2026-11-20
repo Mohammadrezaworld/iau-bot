@@ -24,13 +24,13 @@ const nowS = () => Math.floor(Date.now() / 1000);
 // درج ردیف + ثبت effect در یک batch. اگه کلید قبلاً done باشه، هیچ ردیفی اضافه نمی‌شه.
 // stmt: { table, cols: [..], vals: [..] }  ·  result: خلاصه‌ی قابل بازیابی
 // خروجی: { created: boolean }
-export async function dbEffect(env, opKey, kind, stmt, result) {
+export async function dbEffect(env, opKey, kind, stmt, result, updateId = null) {
   if (!opKey) throw new Error("dbEffect: opKey لازم است");
   const cols = stmt.cols.join(", ");
   const marks = stmt.cols.map(() => "?").join(", ");
   const res = await env.DB.batch([
-    env.DB.prepare("INSERT OR IGNORE INTO effects (op_key, kind, state, update_id, lease, result, at_utc) VALUES (?, ?, 'intent', NULL, '', '', ?)")
-      .bind(opKey, kind, nowS()),
+    env.DB.prepare("INSERT OR IGNORE INTO effects (op_key, kind, state, update_id, lease, result, at_utc) VALUES (?, ?, 'intent', ?, '', '', ?)")
+      .bind(opKey, kind, updateId, nowS()),
     env.DB.prepare(`INSERT INTO ${stmt.table} (${cols}) SELECT ${marks} WHERE EXISTS (SELECT 1 FROM effects WHERE op_key = ? AND state = 'intent')`)
       .bind(...stmt.vals, opKey),
     // last_insert_rowid فقط وقتی این batch ردیف را درج کرده (state=intent) معتبره

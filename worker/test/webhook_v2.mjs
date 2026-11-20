@@ -270,5 +270,17 @@ raw.exec(`INSERT INTO admin_sessions (user_id, flow, step, data, updated_utc) VA
 reset(); w = await hook(wOk(9160, 5));
 ok_("W3 legacy session without id: nothing inserted, asks to restart", q1("SELECT COUNT(*) AS n FROM contacts WHERE name = 'legacy'").n === 0 && sentTo(5).some((m) => m.text.includes("دوباره از اول")));
 
+// A6: اثر ویزارد به update تأیید وصل است تا /review جزئیاتش را نشان دهد
+await runWizard(9170, 5, ["دسته A6", "شخص A6", "0912666", "-"]);
+const sidA6 = JSON.parse(q1("SELECT data FROM admin_sessions WHERE user_id = 5").data)._sid;
+rules.failChat["5"] = 1;
+reset(); w = await hook(wOk(9180, 5));
+const a6Effect = q1("SELECT state, update_id, row_id FROM effects WHERE op_key = ?", `wizard:5:call:${sidA6}`);
+ok_("A6 wizard effect records its callback update id after reply failure", w.status === 500 && row(9180).state === "failed" && a6Effect?.state === "done" && a6Effect.update_id === 9180);
+raw.exec(`UPDATE update_queue SET at_utc=${NOW - 700} WHERE update_id=9180`);
+reset(); await hook(ownerMsg(9181, "/review"));
+const reviewA6 = sentTo(5).at(-1)?.text || "";
+ok_("A6 /review shows wizard effect row id and key", reviewA6.includes(`ردیف DB #${a6Effect.row_id}`) && reviewA6.includes(`کلید wizard:5:call:${sidA6}`));
+
 console.log(fails === 0 ? "ALL PASS" : `${fails} FAILED`);
 process.exit(fails ? 1 : 0);
