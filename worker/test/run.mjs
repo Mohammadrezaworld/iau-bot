@@ -10,7 +10,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const SUITES = [
   "judge_selftest.mjs", // آزمون منفی خود runner: خروجی بد باید شکست بخورد
   "webhook_v2.mjs", // صف webhook، lease، effects، مهاجرت (SQLite محلی)
-  "batch_approval.mjs", // دسته‌های اسکرپ: ادامه، نتیجه‌ی مبهم، سیل، سکوت، CAS، fallback، عکس
+  "batch_approval.mjs", // دسته‌های اسکرپ: ادامه، CAS، عکس، image-only تلگرام و متن کوتاه
   "scrape_mode.mjs", // پنل حالت ارسال: تأیید دستی / خودکار / توقف، تغییر حالت و استقرار
   "flood_guard.mjs", // محافظ سیل و حالت آزمایشی
   "dm_menu.mjs", // منوی پیوی
@@ -32,8 +32,10 @@ const SUITES = [
   "posts_index.mjs", // ایندکس ingest: آخرین پست‌های کانال بدون خواندن کل کانال
   "bale_image_only.mjs", // اسکرپر بله: پست تصویری بدون کپشن نگه داشته می‌شود؛ بدون عکس و بدون متن کنار گذاشته می‌شود
   "bale_image_only_junk.mjs", // ورکر: پست تصویری بدون کپشن جنک نیست
+  "telegram_scraper_image_only.mjs", // اسکرپر تلگرام: عکس از HTML واقعی، حذف پست بی‌متن و بی‌عکس
   "telegram_workflow.mjs", // ورک‌فلو تلگرام فقط با اجرای دستی و بدون schedule داخلی
   "d1_indexes.mjs", // ایندکس‌های کوئری‌های پرخواندن D1: بدون اسکن کامل جدول
+  "metro_thursday.mjs", // مترو: پنجشنبه‌ها جدول جمعه/تعطیلی
 ];
 
 let failed = 0;

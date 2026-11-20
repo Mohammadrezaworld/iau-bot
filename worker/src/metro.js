@@ -13,13 +13,16 @@ const RATE_WINDOW = 600;
 const RATE_MAX = 3;
 const nowS = () => Math.floor(Date.now() / 1000);
 
+// پنجشنبه، جمعه و تعطیلات رسمی: جدول «جمعه و تعطیلی» (قطار پنجشنبه‌ها هم طبق این جدول است)
+export const usesFridayTable = (dow) => dow === "Fri" || dow === "Thu";
+
 function tehranNow() {
   const hm = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Asia/Tehran", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
   }).format(new Date());
   const [h, m] = hm.split(":").map(Number);
   const dow = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Tehran", weekday: "short" }).format(new Date());
-  return { iso: tehranToday(), nowMin: (h * 60 + m) % 1440, friday: dow === "Fri" };
+  return { iso: tehranToday(), nowMin: (h * 60 + m) % 1440, friday: usesFridayTable(dow) };
 }
 
 // جمعه و تعطیلات رسمی از جدول جمعه
