@@ -260,7 +260,7 @@ async function dispatchUpdate(env, update, ctx = null) {
       else if (data.startsWith("kw:")) await handleKeywordCallback(env, cq);
       else if (data.startsWith("hol:")) await handleHolidayCallback(env, cq);
       else if (data.startsWith("jrm:")) await handleJozveRemoveCallback(env, cq);
-      else await handleCallback(env, cq);
+      else await handleCallback(env, cq, ctx);
     }
     return;
   }
