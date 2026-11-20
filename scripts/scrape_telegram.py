@@ -4,6 +4,7 @@
 """
 
 import json
+import re
 import sys
 
 import httpx
@@ -22,6 +23,28 @@ HEADERS = {
 }
 
 
+def _image_url(msg) -> str:
+    photo = msg.select_one(".tgme_widget_message_photo_wrap")
+    if photo:
+        style = photo.get("style", "")
+        match = re.search(r"background-image\s*:\s*url\(\s*(['\"]?)(.*?)\1\s*\)", style, re.IGNORECASE)
+        if match:
+            url = match.group(2).strip()
+            if url.startswith(("https://", "http://")):
+                return url
+
+    # بعضی قالب‌ها عکس را با img می‌گذارند؛ عکس پروفایل و تصویر داخل متن رسانه‌ی پست نیستند.
+    for image in msg.select("img"):
+        if image.find_parent(class_="tgme_widget_message_user"):
+            continue
+        if image.find_parent(class_="tgme_widget_message_text"):
+            continue
+        url = image.get("src") or image.get("data-src") or ""
+        if url.startswith(("https://", "http://")):
+            return url
+    return ""
+
+
 def fetch_channel(name: str) -> list[dict]:
     url = f"https://t.me/s/{name}"
     resp = httpx.get(url, headers=HEADERS, timeout=30, follow_redirects=True)
@@ -33,9 +56,10 @@ def fetch_channel(name: str) -> list[dict]:
         data_post = msg.get("data-post", "")  # مثلاً fanniBultan/582
         text_node = msg.select_one("div.tgme_widget_message_text")
         text = text_node.get_text("\n", strip=True) if text_node else ""
+        image_url = _image_url(msg)
         time_node = msg.select_one("time")
         published = time_node.get("datetime", "") if time_node else ""
-        if not data_post:
+        if not data_post or (not text and not image_url):
             continue
         posts.append({
             "source": "telegram",
@@ -43,7 +67,7 @@ def fetch_channel(name: str) -> list[dict]:
             "post_id": data_post,
             "text": text,
             "published": published,
-            "image_url": "",  # عکس‌ها در مرحله بعد اضافه میشن
+            "image_url": image_url,
         })
     return posts
 
