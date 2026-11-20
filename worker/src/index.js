@@ -30,6 +30,19 @@ const nowUtc = () => Math.floor(Date.now() / 1000);
 
 const FLOOD_LIMIT = 5;
 
+// منوی DM باید spinner را ببندد، حتی اگر update بعداً منتظر صف D1 بماند.
+async function acknowledgeDmCallbackEarly(env, cq) {
+  try {
+    return await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+  } catch (err) {
+    if (err && err.refused && /query is too old|response timeout expired|query id is invalid/i.test(err.message || "")) {
+      console.warn("dm_callback_ack_expired");
+      return null;
+    }
+    throw err;
+  }
+}
+
 // مشخص می‌کنه پست بله جدیده (برای ارسال) یا قدیمی/بی‌تاریخ (فقط ثبت می‌شه)
 function baleCategory(p, today) {
   if (!p.post_date) return "unknown";
@@ -296,8 +309,11 @@ async function handleTelegramWebhook(request, env) {
   }
 
   const update = await request.json().catch(() => null);
-  // ساعت سکوت گروه: هیچ پاسخ یا واکنشی به پیام/دکمه‌ی گروه داده نمی‌شه (رفتار فعلی؛ تغییر نکرده)
+  // ساعت سکوت گروه: هیچ پاسخ یا واکنشی به دکمه‌ی گروه داده نمی‌شه (رفتار فعلی؛ تغییر نکرده)
   if (update && (await groupSilenced(env, update))) return new Response("ok", { status: 200 });
+
+  const cq = update && update.callback_query;
+  if (cq && cq.id && String(cq.data || "").startsWith("d:")) await acknowledgeDmCallbackEarly(env, cq);
 
   const id = update && Number.isSafeInteger(update.update_id) ? update.update_id : null;
   let ctx = null;

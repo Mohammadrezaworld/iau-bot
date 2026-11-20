@@ -762,36 +762,22 @@ export async function handleDmCallback(env, cq) {
   const chatId = cq.message.chat.id;
   const msgId = cq.message.message_id;
   const uid = cq.from.id;
-  const acknowledge = async (text = "", showAlert = false) => {
-    const payload = { callback_query_id: cq.id };
-    if (text) payload.text = text;
-    if (showAlert) payload.show_alert = true;
-    try {
-      return await tg(env, "answerCallbackQuery", payload);
-    } catch (err) {
-      const message = err && err.message ? err.message : "";
-      if (err && err.refused && /query is too old|query ID is invalid/i.test(message)) {
-        console.warn("dm_callback_ack_expired");
-        return null;
-      }
-      throw err;
-    }
-  };
-  const alert = (text) => acknowledge(text, true);
-  if (String(uid) !== String(chatId)) return alert(DM_NOT_OWNER);
+  if (String(uid) !== String(chatId)) return sendMessage(env, chatId, DM_NOT_OWNER);
   if (!(await takeDmClick(env, uid))) {
-    return acknowledge("لطفاً کمی صبر کن.");
+    const sent = await sendMessage(env, chatId, "لطفاً کمی صبر کن.");
+    await rememberMsg(env, chatId, sent.message_id, LIMIT_TTL);
+    return;
   }
   const state = await getDmMenu(env, uid);
   if (!state || state.msg !== msgId || nowS() > state.created + DM_MAX_LIFE) {
-    await alert(DM_EXPIRED);
+    const sent = await sendMessage(env, chatId, DM_EXPIRED);
+    await rememberMsg(env, chatId, sent.message_id, RESULT_TTL);
     await tryDeleteMessage(env, chatId, msgId);
     if (state && state.msg === msgId) await saveDmMenu(env, uid, null);
     return;
   }
 
-  // Stop Telegram's button spinner before membership checks, D1 view queries, or message edits.
-  await acknowledge();
+  // The webhook already acknowledged d:* before queue/D1 work.
   if (!(await dmIsMember(env, uid))) {
     await tryDeleteMessage(env, chatId, msgId);
     await saveDmMenu(env, uid, null);

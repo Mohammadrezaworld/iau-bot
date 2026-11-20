@@ -7,10 +7,12 @@ const { webhookSecret } = await import(WORKER + "src/telegram.js");
 const raw = new DatabaseSync(":memory:");
 raw.exec(readFileSync(WORKER + "schema.sql", "utf8"));
 // Use SQLite's real row-change count so INSERT OR IGNORE duplicate webhook IDs are modeled correctly.
-const db = { prepare(sql) { const st = raw.prepare(sql); const run = (...a) => { const r = st.run(...a); return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } }; }; return { bind: (...a) => ({ first: async () => st.get(...a) ?? null, all: async () => ({ results: st.all(...a) }), run: async () => run(...a) }), first: async () => st.get() ?? null, all: async () => ({ results: st.all() }), run: async () => run() }; } };
+const timeline = [];
+const db = { prepare(sql) { const st = raw.prepare(sql); const run = (...a) => { timeline.push(`db:run:${sql}`); const r = st.run(...a); return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } }; }; return { bind: (...a) => ({ first: async () => { timeline.push(`db:first:${sql}`); return st.get(...a) ?? null; }, all: async () => { timeline.push(`db:all:${sql}`); return { results: st.all(...a) }; }, run: async () => run(...a) }), first: async () => { timeline.push(`db:first:${sql}`); return st.get() ?? null; }, all: async () => { timeline.push(`db:all:${sql}`); return { results: st.all() }; }, run: async () => run() }; } };
 const sent = []; let mid = 100; const memberStatus = { v: "member" }; let notModified = false; let staleAck = false;
 globalThis.fetch = async (u, o) => {
   const m = String(u).split("/").pop(); const b = o && o.body ? JSON.parse(o.body) : {};
+  timeline.push(`tg:${m}`);
   sent.push({ m, ...b });
   if (m === "answerCallbackQuery" && staleAck) return new Response(JSON.stringify({ ok: false, error_code: 400, description: "Bad Request: query is too old and response timeout expired or query ID is invalid" }), { status: 400, headers: { "content-type": "application/json" } });
   if (m === "createChatInviteLink") return Response.json({ ok: true, result: { invite_link: "https://t.me/+JOIN1" } });
@@ -72,13 +74,16 @@ ok("no file sent in DM", noForbidden());
 {
   const updateId = 6100;
   clk += 5000;
-  sent.length = 0; staleAck = true;
+  sent.length = 0; timeline.length = 0; staleAck = true;
   const first = await hook(callbackUpdate(updateId, 77, "d:n", menu2));
   staleAck = false;
   const ackIndex = sent.findIndex(x => x.m === "answerCallbackQuery");
   const memberIndex = sent.findIndex(x => x.m === "getChatMember");
   const editIndex = sent.findIndex(x => x.m === "editMessageText");
+  const ackTimeline = timeline.indexOf("tg:answerCallbackQuery");
+  const firstD1 = timeline.findIndex(x => x.startsWith("db:"));
   const row = raw.prepare("SELECT state, attempts FROM update_queue WHERE update_id = ?").get(updateId);
+  ok("DM callback ACK precedes the first D1 operation", ackTimeline >= 0 && firstD1 > ackTimeline);
   ok("DM callback is acknowledged before membership lookup and menu edit", ackIndex >= 0 && ackIndex < memberIndex && ackIndex < editIndex);
   ok("expired callback acknowledgement does not fail the menu action", first.status === 200 && row.state === "done" && row.attempts === 1 && calls("editMessageText").length === 1);
   sent.length = 0;
@@ -116,8 +121,8 @@ ok("close deletes view and welcome", calls("deleteMessage").some(x => x.message_
   await hk("d:n"); await hk("d:n"); await hk("d:n");
   const before = calls("answerCallbackQuery").filter(x => !x.show_alert && x.text).length;
   await hk("d:n");
-  const soft = calls("answerCallbackQuery").filter(x => x.text === "لطفاً کمی صبر کن.").length;
-  ok("4th rapid click gets soft toast", soft === 1 && before === 0);
+  const soft = calls("sendMessage").filter(x => x.text === "لطفاً کمی صبر کن.").length;
+  ok("4th rapid click gets visible rate-limit feedback after early ACK", soft === 1 && before === 0 && calls("answerCallbackQuery").length === 4);
   clk += 2000;
   sent.length = 0; await hk("d:e");
   ok("after a pause clicks work again", calls("editMessageText").length === 1);
@@ -125,11 +130,16 @@ ok("close deletes view and welcome", calls("deleteMessage").some(x => x.message_
 
 // 6. non-owner clicks
 sent.length = 0; await cb(88, "d:n", menu2, 77);
-ok("non-owner gets alert", calls("answerCallbackQuery")[0] && calls("answerCallbackQuery")[0].text === "این منو مال تو نیست!");
+ok("non-owner gets visible feedback after early ACK", calls("sendMessage").some(x => x.text === "این منو مال تو نیست!") && calls("answerCallbackQuery").length === 1);
+
+// 6b. d:* callback outside a private chat is acknowledged but never dispatched to the DM menu.
+sent.length = 0;
+await hook({ update_id: 6200, callback_query: { id: "q6200", from: { id: 77 }, data: "d:n", message: { message_id: 999, chat: { id: -100999, type: "supergroup" } } } });
+ok("d:* callback outside private is acknowledged without DM work", calls("answerCallbackQuery").length === 1 && calls("getChatMember").length === 0 && calls("editMessageText").length === 0);
 
 // 7. stale menu
 sent.length = 0; await cb(77, "d:n", 999);
-ok("stale menu gets expired alert", calls("answerCallbackQuery")[0].text.includes("منقضی"));
+ok("stale menu gets visible expiry feedback after early ACK", calls("sendMessage").some(x => x.text.includes("منقضی")) && calls("answerCallbackQuery").length === 1);
 
 // 8. close
 const curMenu = JSON.parse(raw.prepare("select value from settings where key='dm_menu:77'").get().value).msg;
@@ -170,7 +180,7 @@ memberStatus.v = "member";
 sent.length = 0; await dm(77, "/jozve"); const m4 = mid;
 const realNow = Date.now; Date.now = () => realNow() + 241000;
 sent.length = 0; await cb(77, "d:n", m4);
-ok("menu expires after max life", calls("answerCallbackQuery")[0].text.includes("منقضی"));
+ok("menu expires after max life with visible feedback", calls("sendMessage").some(x => x.text.includes("منقضی")) && calls("answerCallbackQuery").length === 1);
 Date.now = realNow;
 
 // 12. admin not affected by DM menu
