@@ -6,7 +6,7 @@
 import { tg } from "./telegram.js";
 import { getSetting } from "./public.js";
 import { recordEvent } from "./monitor.js";
-import { readModeSnapshot, inTehranQuietHours, keywordsList, cleanPostText, isJunkPost, isJunkBalePost, buildSections, chunkMessages, sendChunk, sendPhotos } from "./channels.js";
+import { readModeSnapshot, inTehranQuietHours, keywordsList, cleanPostText, isJunkBalePost, buildSections, chunkMessages, sendChunk, sendPhotos } from "./channels.js";
 import { claimExternal, finishExternal, AmbiguousError, LeaseLostError } from "./effects.js";
 import { setOutcome } from "./outcomes.js";
 import { claimUpdate, markOutcome, markDoneWithRetry, notifyNeedsReview } from "./updates.js";
@@ -35,10 +35,12 @@ export async function prepareBatch(env) {
   ).all();
   if (!results.length) return { prepared: 0 };
 
-  // پست‌های بله که فقط فوتر/عدد هستن، بدون ارسال علامت می‌خورن
+  // پست‌های جنک بدون ارسال علامت می‌خورن؛ پست کوتاه تلگرام جنک نیست.
   const candidates = [];
   for (const p of results) {
-    if (p.source === "bale" && isJunkBalePost(p)) {
+    const junk = (p.source === "bale" && isJunkBalePost(p))
+      || (p.source === "telegram" && !p.text && !p.image_url);
+    if (junk) {
       await setOutcome(env, [p.id], "junk");
       await env.DB.prepare("UPDATE posts SET sent_at_utc = ? WHERE id = ?").bind(nowUtc(), p.id).run();
     } else {

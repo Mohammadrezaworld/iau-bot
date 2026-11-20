@@ -496,6 +496,31 @@ await prepareBatch(env);
 T("Y7b preview photo refused: text preview with approve button still sent", owner.some((m) => m.reply_markup && JSON.stringify(m.reply_markup).includes("sb:s:")));
 T("Y7b preview photo refused: owner gets a note naming the section and the reason", owner.some((m) => (m.text || "").startsWith("عکس «") && (m.text || "").includes("نرسید: ")));
 
+// X) تلگرام: عکسِ تنها حفظ می‌شود، خالیِ بی‌عکس جنک است، و متن کوتاه همچنان ارسال می‌شود
+raw.exec("UPDATE posts SET sent_at_utc = 1 WHERE sent_at_utc IS NULL");
+atTehranHour(12);
+const xImageUrl = "https://img.example/telegram-image-only.jpg";
+addPost("telegram:test_channel_a", "", xImageUrl); const xImageId = `p${postSeq}`;
+addPost("telegram:test_channel_a", "", ""); const xEmptyId = `p${postSeq}`;
+addPost("telegram:test_channel_a", "x"); const xShortId = `p${postSeq}`;
+reset();
+const xPrepared = await prepareBatch(env);
+const xPostLookupSql = "SELECT p.id, p.sent_at_utc AS sent, bi.batch_id AS batch FROM posts p LEFT JOIN scrape_batch_items bi ON bi.post_id = p.id WHERE p.source = 'telegram' AND p.channel = 'test_channel_a' AND p.post_id = ?";
+const xPostLookupPlan = raw.prepare(`EXPLAIN QUERY PLAN ${xPostLookupSql}`).all(xImageId).map((row) => row.detail);
+T("X test-only post/batch lookup uses the posts composite index without scanning posts", xPostLookupPlan.some((detail) => detail.includes("sqlite_autoindex_posts_1")) && !xPostLookupPlan.some((detail) => /\bSCAN p\b/.test(detail)));
+const xImage = q1(xPostLookupSql, xImageId);
+const xEmpty = q1(xPostLookupSql, xEmptyId);
+const xShort = q1(xPostLookupSql, xShortId);
+const xEmptyOutcome = xEmpty && q1("SELECT outcome FROM post_outcomes WHERE post_id = ?", xEmpty.id)?.outcome;
+T("X image-only Telegram post stays in the batch with its image URL", xPrepared.prepared === 2 && xImage && xImage.sent === null && xImage.batch === xPrepared.batch && G.ownerPhotos.includes(xImageUrl));
+T("X empty Telegram post without image is marked junk and excluded", xEmpty && xEmpty.sent !== null && xEmpty.batch === null && xEmptyOutcome === "junk");
+T("X one-character Telegram text is not junk", xShort && xShort.sent === null && xShort.batch === xPrepared.batch);
+reset();
+const xApproved = await hook(cbOwner(`sb:s:${xPrepared.batch}`));
+const xShortOutcome = xShort && q1("SELECT outcome FROM post_outcomes WHERE post_id = ?", xShort.id)?.outcome;
+T("X approval sends image-only Telegram post through sendPhoto using image_url", xApproved.status === 200 && G.singlePhotos.includes(xImageUrl));
+T("X approval still delivers the short Telegram text and completes the batch", xShortOutcome === "delivered" && batchState(xPrepared.batch) === "sent");
+
 // Y5 (F5): سکوت وسط دسته؛ واحد بعدی نمی‌رسه، باقی‌مانده برای ادامه حفظ می‌شه
 raw.exec("UPDATE posts SET sent_at_utc = 1 WHERE sent_at_utc IS NULL");
 atTehranHour(12);
