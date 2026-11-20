@@ -347,5 +347,20 @@ await answerCallback(env, feedbackCb, "بازخورد قابل‌دیدن", true
 await answerCallback(env, feedbackCb, "بازخورد قابل‌دیدن", true);
 ok_("T4 text feedback survives an early ack and is sent only once", calls.filter((m) => m === "answerCallbackQuery").length === 1 && sentTo(5).filter((m) => m.text === "بازخورد قابل‌دیدن").length === 1);
 
+// T5: failed visible feedback after ACK must not fail/replay the already-acknowledged callback action.
+const failedFeedbackCb = { id: "ack-feedback-failure", message: { message_id: 901, chat: { id: 5, type: "private" } } };
+const originalFetch = globalThis.fetch; let failedNoticeCalls = 0;
+globalThis.fetch = async (u) => {
+  if (String(u).endsWith("/answerCallbackQuery")) return Response.json({ ok: true, result: true });
+  failedNoticeCalls++;
+  return Response.json({ ok: false, error_code: 500, description: "temporary notice failure" }, { status: 500 });
+};
+await acknowledgeCallbackEarly(env, failedFeedbackCb);
+let feedbackError = null;
+try { await answerCallback(env, failedFeedbackCb, "بازخورد موقت"); } catch (err) { feedbackError = err; }
+await answerCallback(env, failedFeedbackCb, "بازخورد موقت");
+globalThis.fetch = originalFetch;
+ok_("T5 failed visible feedback is swallowed and not retried", feedbackError === null && failedNoticeCalls === 1);
+
 console.log(fails === 0 ? "ALL PASS" : `${fails} FAILED`);
 process.exit(fails ? 1 : 0);

@@ -64,8 +64,10 @@ export async function answerCallback(env, cq, text = "", showAlert = false) {
     try {
       return await request;
     } catch (err) {
-      if (context.feedback.get(key) === request) context.feedback.delete(key);
-      throw err;
+      if (context.feedback.get(key) === request) context.feedback.set(key, Promise.resolve(null));
+      // The callback was already acknowledged; a failed notice must not trigger a replay of its action.
+      console.error("callback_feedback_failed");
+      return null;
     }
   }
   return tg(env, "answerCallbackQuery", {
