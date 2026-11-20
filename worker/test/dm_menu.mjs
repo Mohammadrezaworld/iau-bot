@@ -6,11 +6,13 @@ const worker = (await import(WORKER + "src/index.js")).default;
 const { webhookSecret } = await import(WORKER + "src/telegram.js");
 const raw = new DatabaseSync(":memory:");
 raw.exec(readFileSync(WORKER + "schema.sql", "utf8"));
-const db = { prepare(sql) { const st = raw.prepare(sql); return { bind: (...a) => ({ first: async () => st.get(...a) ?? null, all: async () => ({ results: st.all(...a) }), run: async () => { st.run(...a); return { meta: { changes: 1 } }; } }), first: async () => st.get() ?? null, all: async () => ({ results: st.all() }), run: async () => { st.run(); return {}; } }; } };
-const sent = []; let mid = 100; const memberStatus = { v: "member" }; let notModified = false;
+// Use SQLite's real row-change count so INSERT OR IGNORE duplicate webhook IDs are modeled correctly.
+const db = { prepare(sql) { const st = raw.prepare(sql); const run = (...a) => { const r = st.run(...a); return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } }; }; return { bind: (...a) => ({ first: async () => st.get(...a) ?? null, all: async () => ({ results: st.all(...a) }), run: async () => run(...a) }), first: async () => st.get() ?? null, all: async () => ({ results: st.all() }), run: async () => run() }; } };
+const sent = []; let mid = 100; const memberStatus = { v: "member" }; let notModified = false; let staleAck = false;
 globalThis.fetch = async (u, o) => {
   const m = String(u).split("/").pop(); const b = o && o.body ? JSON.parse(o.body) : {};
   sent.push({ m, ...b });
+  if (m === "answerCallbackQuery" && staleAck) return new Response(JSON.stringify({ ok: false, error_code: 400, description: "Bad Request: query is too old and response timeout expired or query ID is invalid" }), { status: 400, headers: { "content-type": "application/json" } });
   if (m === "createChatInviteLink") return Response.json({ ok: true, result: { invite_link: "https://t.me/+JOIN1" } });
   if (m === "editMessageText" && notModified) return new Response(JSON.stringify({ ok: false, error_code: 400, description: "Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message" }), { status: 400, headers: { "content-type": "application/json" } });
   if (m === "getChatMember") return Response.json({ ok: true, result: { status: memberStatus.v, is_member: memberStatus.v === "restricted" } });
@@ -27,7 +29,8 @@ raw.exec("INSERT INTO exam_files (course,professor,title,file_name,file_size,cha
 let fails = 0; const ok = (n, c) => { console.log((c ? "PASS " : "FAIL ") + n); if (!c) fails++; };
 const dm = (uid, text) => hook({ message: { message_id: 1, chat: { id: uid, type: "private" }, from: { id: uid }, text } });
 let clk = 0; const baseNow = Date.now; Date.now = () => baseNow() + clk;
-const cb = (uid, data, msgId, chatId = uid) => (clk += 1500, hook({ callback_query: { id: "q" + Math.random(), from: { id: uid }, data, message: { message_id: msgId, chat: { id: chatId, type: "private" } } } }));
+const callbackUpdate = (updateId, uid, data, msgId, chatId = uid) => ({ ...(updateId === null ? {} : { update_id: updateId }), callback_query: { id: updateId === null ? "q" + Math.random() : "q" + updateId, from: { id: uid }, data, message: { message_id: msgId, chat: { id: chatId, type: "private" } } } });
+const cb = (uid, data, msgId, chatId = uid) => (clk += 1500, hook(callbackUpdate(null, uid, data, msgId, chatId)));
 const calls = (m) => sent.filter(x => x.m === m);
 const FORBIDDEN = ["copyMessage", "sendDocument", "forwardMessage", "sendMediaGroup", "sendPhoto", "sendVideo"];
 const noForbidden = () => !sent.some(x => FORBIDDEN.includes(x.m));
@@ -65,6 +68,24 @@ const linkRows = calls("editMessageText")[0].reply_markup.inline_keyboard;
 const urls = linkRows.flat().filter(b => b.url).map(b => b.url);
 ok("files are URL buttons to channel posts", urls.includes("https://t.me/iautcloud/10") && urls.includes("https://t.me/iautcloud/11"));
 ok("no file sent in DM", noForbidden());
+// A stale answerCallbackQuery is a UI-only failure: acknowledge before slow work, finish once, and skip webhook redelivery.
+{
+  const updateId = 6100;
+  clk += 5000;
+  sent.length = 0; staleAck = true;
+  const first = await hook(callbackUpdate(updateId, 77, "d:n", menu2));
+  staleAck = false;
+  const ackIndex = sent.findIndex(x => x.m === "answerCallbackQuery");
+  const memberIndex = sent.findIndex(x => x.m === "getChatMember");
+  const editIndex = sent.findIndex(x => x.m === "editMessageText");
+  const row = raw.prepare("SELECT state, attempts FROM update_queue WHERE update_id = ?").get(updateId);
+  ok("DM callback is acknowledged before membership lookup and menu edit", ackIndex >= 0 && ackIndex < memberIndex && ackIndex < editIndex);
+  ok("expired callback acknowledgement does not fail the menu action", first.status === 200 && row.state === "done" && row.attempts === 1 && calls("editMessageText").length === 1);
+  sent.length = 0;
+  const duplicate = await hook(callbackUpdate(updateId, 77, "d:n", menu2));
+  const doneRow = raw.prepare("SELECT state, attempts FROM update_queue WHERE update_id = ?").get(updateId);
+  ok("duplicate delivery after stale acknowledgement does not repeat the action", duplicate.status === 200 && doneRow.state === "done" && doneRow.attempts === 1 && calls("editMessageText").length === 0);
+}
 const longest = Math.max(...raw.prepare("select course, professor from jozve_files").all().flatMap(r => [r.course.length]));
 const allCb = [catBtn, courseBtn.callback_data, profBtn.callback_data, "d:fn" + "ا".repeat(14) + "|" + "ب".repeat(14), "d:fn" + "ا".repeat(14) + "|" + "ب".repeat(14).slice(0,14)];
 ok("callback_data within 64 bytes", allCb.every(c => new TextEncoder().encode(c).length <= 64));
@@ -142,7 +163,7 @@ memberStatus.v = "member";
 // 10. membership revoked in middle of menu
 sent.length = 0; await dm(77, "/jozve"); const m3 = mid;
 memberStatus.v = "left"; sent.length = 0; await cb(77, "d:n", m3);
-ok("left group: click gets not-member alert and menu removed", calls("answerCallbackQuery")[0].text.includes("عضو گروه") && calls("deleteMessage").some(x => x.message_id === m3));
+ok("left group: click gets the join gate and menu is removed", calls("sendMessage").some(x => /عضو گروه/.test(x.text) && x.reply_markup?.inline_keyboard?.[0]?.[0]?.url === "https://t.me/+JOIN1") && calls("deleteMessage").some(x => x.message_id === m3));
 memberStatus.v = "member";
 
 // 11. max life
