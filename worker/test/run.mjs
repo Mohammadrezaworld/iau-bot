@@ -34,6 +34,7 @@ const SUITES = [
   "bale_image_only_junk.mjs", // ورکر: پست تصویری بدون کپشن جنک نیست
   "telegram_scraper_image_only.mjs", // اسکرپر تلگرام: عکس از HTML واقعی، حذف پست بی‌متن و بی‌عکس
   "d1_indexes.mjs", // ایندکس‌های کوئری‌های پرخواندن D1: بدون اسکن کامل جدول
+  "metro_thursday.mjs", // مترو: پنجشنبه‌ها جدول جمعه/تعطیلی
 ];
 
 let failed = 0;
