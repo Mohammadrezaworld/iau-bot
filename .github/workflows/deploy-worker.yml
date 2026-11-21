@@ -1,15 +1,20 @@
 name: deploy-worker
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "worker/**"
-      - ".github/workflows/deploy-worker.yml"
   workflow_dispatch:
+    inputs:
+      confirm_production_deploy:
+        description: "Confirm production Worker/D1/secrets deployment and Telegram webhook registration"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 jobs:
   deploy:
+    if: ${{ inputs.confirm_production_deploy }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
