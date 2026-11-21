@@ -6,11 +6,15 @@ const worker = (await import(WORKER + "src/index.js")).default;
 const { webhookSecret } = await import(WORKER + "src/telegram.js");
 const raw = new DatabaseSync(":memory:");
 raw.exec(readFileSync(WORKER + "schema.sql", "utf8"));
-const db = { prepare(sql) { const st = raw.prepare(sql); return { bind: (...a) => ({ first: async () => st.get(...a) ?? null, all: async () => ({ results: st.all(...a) }), run: async () => { st.run(...a); return { meta: { changes: 1 } }; } }), first: async () => st.get() ?? null, all: async () => ({ results: st.all() }), run: async () => { st.run(); return {}; } }; } };
-const sent = []; let mid = 100; const memberStatus = { v: "member" }; let notModified = false;
+// Use SQLite's real row-change count so INSERT OR IGNORE duplicate webhook IDs are modeled correctly.
+const timeline = [];
+const db = { prepare(sql) { const st = raw.prepare(sql); const run = (...a) => { timeline.push(`db:run:${sql}`); const r = st.run(...a); return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } }; }; return { bind: (...a) => ({ first: async () => { timeline.push(`db:first:${sql}`); return st.get(...a) ?? null; }, all: async () => { timeline.push(`db:all:${sql}`); return { results: st.all(...a) }; }, run: async () => run(...a) }), first: async () => { timeline.push(`db:first:${sql}`); return st.get() ?? null; }, all: async () => { timeline.push(`db:all:${sql}`); return { results: st.all() }; }, run: async () => run() }; } };
+const sent = []; let mid = 100; const memberStatus = { v: "member" }; let notModified = false; let staleAck = false;
 globalThis.fetch = async (u, o) => {
   const m = String(u).split("/").pop(); const b = o && o.body ? JSON.parse(o.body) : {};
+  timeline.push(`tg:${m}`);
   sent.push({ m, ...b });
+  if (m === "answerCallbackQuery" && staleAck) return new Response(JSON.stringify({ ok: false, error_code: 400, description: "Bad Request: query is too old and response timeout expired or query ID is invalid" }), { status: 400, headers: { "content-type": "application/json" } });
   if (m === "createChatInviteLink") return Response.json({ ok: true, result: { invite_link: "https://t.me/+JOIN1" } });
   if (m === "editMessageText" && notModified) return new Response(JSON.stringify({ ok: false, error_code: 400, description: "Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message" }), { status: 400, headers: { "content-type": "application/json" } });
   if (m === "getChatMember") return Response.json({ ok: true, result: { status: memberStatus.v, is_member: memberStatus.v === "restricted" } });
@@ -27,7 +31,8 @@ raw.exec("INSERT INTO exam_files (course,professor,title,file_name,file_size,cha
 let fails = 0; const ok = (n, c) => { console.log((c ? "PASS " : "FAIL ") + n); if (!c) fails++; };
 const dm = (uid, text) => hook({ message: { message_id: 1, chat: { id: uid, type: "private" }, from: { id: uid }, text } });
 let clk = 0; const baseNow = Date.now; Date.now = () => baseNow() + clk;
-const cb = (uid, data, msgId, chatId = uid) => (clk += 1500, hook({ callback_query: { id: "q" + Math.random(), from: { id: uid }, data, message: { message_id: msgId, chat: { id: chatId, type: "private" } } } }));
+const callbackUpdate = (updateId, uid, data, msgId, chatId = uid) => ({ ...(updateId === null ? {} : { update_id: updateId }), callback_query: { id: updateId === null ? "q" + Math.random() : "q" + updateId, from: { id: uid }, data, message: { message_id: msgId, chat: { id: chatId, type: "private" } } } });
+const cb = (uid, data, msgId, chatId = uid) => (clk += 1500, hook(callbackUpdate(null, uid, data, msgId, chatId)));
 const calls = (m) => sent.filter(x => x.m === m);
 const FORBIDDEN = ["copyMessage", "sendDocument", "forwardMessage", "sendMediaGroup", "sendPhoto", "sendVideo"];
 const noForbidden = () => !sent.some(x => FORBIDDEN.includes(x.m));
@@ -65,6 +70,27 @@ const linkRows = calls("editMessageText")[0].reply_markup.inline_keyboard;
 const urls = linkRows.flat().filter(b => b.url).map(b => b.url);
 ok("files are URL buttons to channel posts", urls.includes("https://t.me/iautcloud/10") && urls.includes("https://t.me/iautcloud/11"));
 ok("no file sent in DM", noForbidden());
+// A stale answerCallbackQuery is a UI-only failure: acknowledge before slow work, finish once, and skip webhook redelivery.
+{
+  const updateId = 6100;
+  clk += 5000;
+  sent.length = 0; timeline.length = 0; staleAck = true;
+  const first = await hook(callbackUpdate(updateId, 77, "d:n", menu2));
+  staleAck = false;
+  const ackIndex = sent.findIndex(x => x.m === "answerCallbackQuery");
+  const memberIndex = sent.findIndex(x => x.m === "getChatMember");
+  const editIndex = sent.findIndex(x => x.m === "editMessageText");
+  const ackTimeline = timeline.indexOf("tg:answerCallbackQuery");
+  const firstD1 = timeline.findIndex(x => x.startsWith("db:"));
+  const row = raw.prepare("SELECT state, attempts FROM update_queue WHERE update_id = ?").get(updateId);
+  ok("DM callback ACK precedes the first D1 operation", ackTimeline >= 0 && firstD1 > ackTimeline);
+  ok("DM callback is acknowledged before membership lookup and menu edit", ackIndex >= 0 && ackIndex < memberIndex && ackIndex < editIndex);
+  ok("expired callback acknowledgement does not fail the menu action", first.status === 200 && row.state === "done" && row.attempts === 1 && calls("editMessageText").length === 1);
+  sent.length = 0;
+  const duplicate = await hook(callbackUpdate(updateId, 77, "d:n", menu2));
+  const doneRow = raw.prepare("SELECT state, attempts FROM update_queue WHERE update_id = ?").get(updateId);
+  ok("duplicate delivery after stale acknowledgement does not repeat the action", duplicate.status === 200 && doneRow.state === "done" && doneRow.attempts === 1 && calls("editMessageText").length === 0);
+}
 const longest = Math.max(...raw.prepare("select course, professor from jozve_files").all().flatMap(r => [r.course.length]));
 const allCb = [catBtn, courseBtn.callback_data, profBtn.callback_data, "d:fn" + "ا".repeat(14) + "|" + "ب".repeat(14), "d:fn" + "ا".repeat(14) + "|" + "ب".repeat(14).slice(0,14)];
 ok("callback_data within 64 bytes", allCb.every(c => new TextEncoder().encode(c).length <= 64));
@@ -95,8 +121,8 @@ ok("close deletes view and welcome", calls("deleteMessage").some(x => x.message_
   await hk("d:n"); await hk("d:n"); await hk("d:n");
   const before = calls("answerCallbackQuery").filter(x => !x.show_alert && x.text).length;
   await hk("d:n");
-  const soft = calls("answerCallbackQuery").filter(x => x.text === "لطفاً کمی صبر کن.").length;
-  ok("4th rapid click gets soft toast", soft === 1 && before === 0);
+  const soft = calls("sendMessage").filter(x => x.text === "لطفاً کمی صبر کن.").length;
+  ok("4th rapid click gets visible rate-limit feedback after early ACK", soft === 1 && before === 0 && calls("answerCallbackQuery").length === 4);
   clk += 2000;
   sent.length = 0; await hk("d:e");
   ok("after a pause clicks work again", calls("editMessageText").length === 1);
@@ -104,11 +130,16 @@ ok("close deletes view and welcome", calls("deleteMessage").some(x => x.message_
 
 // 6. non-owner clicks
 sent.length = 0; await cb(88, "d:n", menu2, 77);
-ok("non-owner gets alert", calls("answerCallbackQuery")[0] && calls("answerCallbackQuery")[0].text === "این منو مال تو نیست!");
+ok("non-owner gets visible feedback after early ACK", calls("sendMessage").some(x => x.text === "این منو مال تو نیست!") && calls("answerCallbackQuery").length === 1);
+
+// 6b. d:* callback outside a private chat is acknowledged but never dispatched to the DM menu.
+sent.length = 0;
+await hook({ update_id: 6200, callback_query: { id: "q6200", from: { id: 77 }, data: "d:n", message: { message_id: 999, chat: { id: -100999, type: "supergroup" } } } });
+ok("d:* callback outside private is acknowledged without DM work", calls("answerCallbackQuery").length === 1 && calls("getChatMember").length === 0 && calls("editMessageText").length === 0);
 
 // 7. stale menu
 sent.length = 0; await cb(77, "d:n", 999);
-ok("stale menu gets expired alert", calls("answerCallbackQuery")[0].text.includes("منقضی"));
+ok("stale menu gets visible expiry feedback after early ACK", calls("sendMessage").some(x => x.text.includes("منقضی")) && calls("answerCallbackQuery").length === 1);
 
 // 8. close
 const curMenu = JSON.parse(raw.prepare("select value from settings where key='dm_menu:77'").get().value).msg;
@@ -142,14 +173,14 @@ memberStatus.v = "member";
 // 10. membership revoked in middle of menu
 sent.length = 0; await dm(77, "/jozve"); const m3 = mid;
 memberStatus.v = "left"; sent.length = 0; await cb(77, "d:n", m3);
-ok("left group: click gets not-member alert and menu removed", calls("answerCallbackQuery")[0].text.includes("عضو گروه") && calls("deleteMessage").some(x => x.message_id === m3));
+ok("left group: click gets the join gate and menu is removed", calls("sendMessage").some(x => /عضو گروه/.test(x.text) && x.reply_markup?.inline_keyboard?.[0]?.[0]?.url === "https://t.me/+JOIN1") && calls("deleteMessage").some(x => x.message_id === m3));
 memberStatus.v = "member";
 
 // 11. max life
 sent.length = 0; await dm(77, "/jozve"); const m4 = mid;
 const realNow = Date.now; Date.now = () => realNow() + 241000;
 sent.length = 0; await cb(77, "d:n", m4);
-ok("menu expires after max life", calls("answerCallbackQuery")[0].text.includes("منقضی"));
+ok("menu expires after max life with visible feedback", calls("sendMessage").some(x => x.text.includes("منقضی")) && calls("answerCallbackQuery").length === 1);
 Date.now = realNow;
 
 // 12. admin not affected by DM menu

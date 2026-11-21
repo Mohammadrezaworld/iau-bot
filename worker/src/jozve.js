@@ -762,31 +762,37 @@ export async function handleDmCallback(env, cq) {
   const chatId = cq.message.chat.id;
   const msgId = cq.message.message_id;
   const uid = cq.from.id;
-  const alert = (text) => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text, show_alert: true });
-  if (String(uid) !== String(chatId)) return alert(DM_NOT_OWNER);
+  if (String(uid) !== String(chatId)) return sendMessage(env, chatId, DM_NOT_OWNER);
   if (!(await takeDmClick(env, uid))) {
-    return tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: "لطفاً کمی صبر کن." });
+    const sent = await sendMessage(env, chatId, "لطفاً کمی صبر کن.");
+    await rememberMsg(env, chatId, sent.message_id, LIMIT_TTL);
+    return;
   }
   const state = await getDmMenu(env, uid);
   if (!state || state.msg !== msgId || nowS() > state.created + DM_MAX_LIFE) {
+    const sent = await sendMessage(env, chatId, DM_EXPIRED);
+    await rememberMsg(env, chatId, sent.message_id, RESULT_TTL);
     await tryDeleteMessage(env, chatId, msgId);
     if (state && state.msg === msgId) await saveDmMenu(env, uid, null);
-    return alert(DM_EXPIRED);
+    return;
   }
+
+  // The webhook already acknowledged d:* before queue/D1 work.
   if (!(await dmIsMember(env, uid))) {
     await tryDeleteMessage(env, chatId, msgId);
     await saveDmMenu(env, uid, null);
-    return alert(DM_NOT_MEMBER);
+    await sendGate(env, chatId, DM_NOT_MEMBER);
+    return;
   }
   const data = cq.data || "";
   if (data === "d:x") {
     await tryDeleteMessage(env, chatId, msgId);
     if (state.hostMsg) await tryDeleteMessage(env, chatId, state.hostMsg);
     await saveDmMenu(env, uid, null);
-    return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+    return;
   }
   const view = await dmView(env, data);
-  if (!view) return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+  if (!view) return;
   const left = Math.max(1, state.created + DM_MAX_LIFE - nowS());
   if (state.host) {
     // اولین جابه‌جایی از منوی خوش‌آمد: متن خوش‌آمد سرِ جاش می‌مونه؛ دکمه‌هاش برداشته و منو زیرش ادامه پیدا می‌کنه
@@ -798,7 +804,7 @@ export async function handleDmCallback(env, cq) {
     const sent = await tg(env, "sendMessage", { chat_id: chatId, text: view.text, reply_markup: view.markup });
     await saveDmMenu(env, uid, { msg: sent.message_id, created: state.created, hostMsg: msgId });
     await rememberMsg(env, chatId, sent.message_id, Math.min(DM_TTL, left));
-    return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+    return;
   }
   try {
     await tg(env, "editMessageText", { chat_id: chatId, message_id: msgId, text: view.text, reply_markup: view.markup });
@@ -807,5 +813,4 @@ export async function handleDmCallback(env, cq) {
   }
   // هر کلیک TTL رو تمدید می‌کنه، ولی بیشتر از سقف عمر منو نمی‌مونه
   await rememberMsg(env, chatId, msgId, Math.min(DM_TTL, left));
-  return tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
 }
