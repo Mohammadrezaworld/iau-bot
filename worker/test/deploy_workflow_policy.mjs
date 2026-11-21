@@ -26,6 +26,8 @@ assert.match(prChecks, /^on:\r?\n  pull_request:/m, "PR checks run on pull reque
 assert.doesNotMatch(prChecks, /pull_request_target|secrets\./, "PR checks do not use elevated triggers or secrets");
 assert.match(prChecks, /^permissions:\r?\n  contents: read\r?\n/m, "PR workflow token is read-only");
 assert.match(prChecks, /node-version: ["']22["']/, "PR checks use the documented Node 22+ test runtime");
+assert.match(prChecks, /actions\/setup-python@v5/, "PR checks provision Python for scraper tests");
+assert.match(prChecks, /python -m pip install httpx beautifulsoup4/, "PR checks install the existing scraper test dependencies");
 assert.match(prChecks, /node worker\/test\/run\.mjs/, "PR checks run the complete regression suite");
 
 console.log("PASS production deployment is manual-only and confirmation-gated");
