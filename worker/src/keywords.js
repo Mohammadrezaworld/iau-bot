@@ -1,5 +1,5 @@
 // مدیریت کلمات کلیدی اعلان کانال‌ها (فقط ادمین کامل). فهرست در settings با کلید keywords به‌صورت JSON ذخیره می‌شه.
-import { tg, sendMessage, tryDeleteMessage } from "./telegram.js";
+import { tg, sendMessage, tryDeleteMessage, answerCallback } from "./telegram.js";
 import { audit, getRole } from "./admin.js";
 import { keywordsList, normalizeForMatch } from "./channels.js";
 import { pushUndo } from "./undo.js";
@@ -60,13 +60,14 @@ export async function keywordCommand(env, chatId, userId, cmd, arg) {
 export async function handleKeywordCallback(env, cq) {
   const data = String(cq.data || "");
   const chatId = cq.message.chat.id;
-  const answer = (text = "") => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text });
+  const answer = (text = "") => answerCallback(env, cq, text);
 
   if (!(await isFullAdmin(env, cq.from.id))) return answer("این کار برای سطح دسترسی شما نیست.");
 
   if (data === "kw:n") {
+    await answer();
     await tryDeleteMessage(env, chatId, cq.message.message_id);
-    return answer();
+    return;
   }
 
   if (data.startsWith("kw:c:")) {
@@ -87,9 +88,9 @@ export async function handleKeywordCallback(env, cq) {
     const list = await keywordsList(env);
     const target = list.find((k) => k === w);
     if (!target) return answer("این کلمه دیگه نیست");
+    await answer();
     await save(env, list.filter((k) => k !== target), `حذف کلمه‌ی «${target}»`);
     await audit(env, cq.from.id, "keyword_remove", target);
-    await answer("حذف شد");
     return sendMessage(env, chatId, `کلمه «${target}» حذف شد.`);
   }
 

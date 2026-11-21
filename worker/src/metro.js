@@ -1,6 +1,6 @@
 // /metro: منوی مرحله‌به‌مرحله‌ی گروه (مبدأ ← مقصد ← نتیجه) و آپلود جدول توسط ادمین در DM.
 // وضعیت منو داخل خود دکمه‌هاست (بدون جدول state)؛ فقط درخواست‌کننده می‌تونه از دکمه‌ها استفاده کنه.
-import { tg, sendMessage, tryDeleteMessage } from "./telegram.js";
+import { tg, sendMessage, tryDeleteMessage, answerCallback } from "./telegram.js";
 import { isAdmin, audit, getRole } from "./admin.js";
 import { tehranToday, faDate } from "./calendar.js";
 import { pushUndo } from "./undo.js";
@@ -74,7 +74,9 @@ async function editTemp(env, chatId, msgId, text, markup) {
   await rememberMsg(env, chatId, msgId);
 }
 
-const ack = (env, cq, text = "") => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text });
+const ack = (env, cq, text = "") => text && cq.message?.chat?.type !== "private"
+  ? sendTemp(env, cq.message.chat.id, text)
+  : answerCallback(env, cq, text);
 
 // دکمه‌ها دو ستونه؛ آخرین ردیف دکمه‌های کمکی
 function grid(buttons, tail = []) {
@@ -161,6 +163,7 @@ export async function handleMetroCallback(env, cq) {
   if (String(cq.from.id) !== uidStr) return ack(env, cq, "این دکمه‌ها برای درخواست‌کننده‌ی /metro هستند.");
 
   if (action === "x") {
+    await ack(env, cq);
     await tryDeleteMessage(env, chatId, msgId);
     await forgetMsg(env, chatId, msgId);
     return ack(env, cq);
@@ -175,15 +178,18 @@ export async function handleMetroCallback(env, cq) {
   };
 
   if (action === "s") {
+    await ack(env, cq);
     await editTemp(env, chatId, msgId, originText(v), originMarkup(uidStr, v));
   } else if (action === "o") {
     const i = idx(x);
     if (i === null) return ack(env, cq);
+    await ack(env, cq);
     await editTemp(env, chatId, msgId, destText(v, i), destMarkup(uidStr, v, i));
   } else if (action === "d") {
     const i = idx(x);
     const j = idx(y);
     if (i === null || j === null || i === j) return ack(env, cq);
+    await ack(env, cq);
     const now = tehranNow();
     const t = tripsFor(v.data, i, j, now.nowMin, 3);
     await editTemp(env, chatId, msgId, resultText(v, i, j, t, now.nowMin, now.iso), resultMarkup(uidStr, v));
@@ -266,6 +272,7 @@ export async function handleMetroUploadCallback(env, cq) {
 
   if (action !== "ok") return ack(env, cq, "لغو شد");
 
+  await ack(env, cq);
   const data = JSON.parse(p.payload);
   const row = await env.DB.prepare(
     "INSERT INTO metro_versions (created_utc, is_active, data_json) VALUES (?, 1, ?) RETURNING id"
@@ -278,7 +285,7 @@ export async function handleMetroUploadCallback(env, cq) {
     "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
   ).bind(`metro_active_${data.kind}`, String(row.id)).run();
   await audit(env, cq.from.id, "metro_upload", `${data.kind}:${row.id}`);
-  await ack(env, cq, "ثبت شد");
+  await ack(env, cq);
   return sendMessage(env, chatId, `جدول «${KIND_LABEL[data.kind]}» فعال شد (نسخه ${fa2(row.id)}).`);
 }
 

@@ -6,16 +6,18 @@ const WORKER = __ftp(new URL("..", import.meta.url));
 const { startWizard, handleCallback } = await import(WORKER + "src/wizard.js");
 const raw = new DatabaseSync(":memory:");
 raw.exec(readFileSync(WORKER + "schema.sql", "utf8"));
+const order = [];
 const mk = (sql, args = []) => ({
   bind: (...a) => mk(sql, a),
   first: async () => raw.prepare(sql).get(...args) ?? null,
   all: async () => ({ results: raw.prepare(sql).all(...args) }),
-  run: async () => { await Promise.resolve(); const r = raw.prepare(sql).run(...args); return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } }; },
+  run: async () => { order.push("db:run"); await Promise.resolve(); const r = raw.prepare(sql).run(...args); return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } }; },
 });
 const db = { prepare: (sql) => mk(sql), batch: async (stmts) => { const out = []; for (const s of stmts) out.push(await s.run()); return out; } };
 const sent = [];
 globalThis.fetch = async (u, o) => {
   const m = String(u).split("/").pop(); const b = o && o.body ? JSON.parse(o.body) : {};
+  order.push(m);
   sent.push({ m, ...b });
   return Response.json({ ok: true, result: { message_id: 1 } });
 };
@@ -29,10 +31,11 @@ const answered = (text) => sent.some((x) => x.m === "answerCallbackQuery" && x.t
 // ۱. جلسه‌ی فعال: «لغو» جلسه را پاک می‌کند و «لغو شد» می‌گوید
 await startWizard(env, 31, 31, "call");
 ok("setup: wizard session exists", !!sess(31));
-sent.length = 0;
+sent.length = 0; order.length = 0;
 await handleCallback(env, cb(31, "w:stop"));
 ok("active wizard: session cleared", !sess(31));
 ok("active wizard: says «لغو شد»", said("لغو شد."));
+ok("active wizard: callback ack precedes the session delete", order.indexOf("answerCallbackQuery") >= 0 && order.indexOf("answerCallbackQuery") < order.indexOf("db:run"));
 
 // ۲. جلسه‌ی تمام‌شده / دکمه‌ی قدیمی: «دیگه فعال نیست»، و «لغو شد» نمی‌گوید
 sent.length = 0;
@@ -44,5 +47,10 @@ ok("stale wizard «لغو»: does not say «لغو شد»", !said("لغو شد."
 sent.length = 0;
 await handleCallback(env, cb(31, "w:cancel"));
 ok("delete «نه» (w:cancel without session): still says «لغو شد»", said("لغو شد."));
+
+// ۴. افزودن ادمین: ack پیش از چند write، همراه با پیام نتیجه
+order.length = 0; sent.length = 0;
+await handleCallback(env, cb(5, "adm:full:12345"));
+ok("admin add: callback ack precedes D1 writes and success stays visible", order[0] === "answerCallbackQuery" && order.indexOf("db:run") > 0 && said("ادمین 12345 با سطح کامل اضافه شد."));
 
 console.log(fails ? `FAILED ${fails}` : "ALL PASSED"); process.exit(fails ? 1 : 0);

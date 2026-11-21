@@ -40,10 +40,11 @@ db.prepare = (sql) => { const st = origPrepare(sql); const b = st.bind; st.bind 
 const ok = (result) => Response.json({ ok: true, result });
 let mid = 1000;
 const G = { sent: [], photos: [], singlePhotos: [], fail: null, quietAfterOne: false, failAt: null, dropToken: null, photoFail: null }; // fail: 'network' | 'refuse' (یک‌بار، برای پیام گروه)
-const owner = []; const answers = [];
+const owner = []; const answers = []; const networkOrder = [];
 globalThis.fetch = async (u, o) => {
   const method = String(u).split("/").pop();
   const b = o && o.body ? JSON.parse(o.body) : {};
+  networkOrder.push(method);
   if (method === "answerCallbackQuery") { answers.push(b.text || ""); return ok(true); }
   if (method === "getChatMember") return ok({ status: "member" });
   if (String(b.chat_id) === "-1001") {
@@ -97,7 +98,7 @@ const batchOf = (postText) => q1("SELECT bi.batch_id AS b FROM scrape_batch_item
 const unsent = () => q1("SELECT COUNT(*) AS n FROM posts WHERE sent_at_utc IS NULL").n;
 const batchState = (id) => q1("SELECT state FROM scrape_batches WHERE id = ?", id)?.state;
 const ids = (bid) => qN("SELECT post_id FROM scrape_batch_items WHERE batch_id = ?", bid).map((r) => r.post_id);
-const reset = () => { G.sent.length = 0; G.photos.length = 0; G.singlePhotos.length = 0; owner.length = 0; answers.length = 0; };
+const reset = () => { G.sent.length = 0; G.photos.length = 0; G.singlePhotos.length = 0; owner.length = 0; answers.length = 0; networkOrder.length = 0; };
 
 // آخرین دکمه‌ی مالک با این پیشوند (توکن تأیید خودکار)؛ باید قبل از reset() خوانده شود
 const tokBtn = (prefix) => {
@@ -145,7 +146,7 @@ T("M2 non-owner: no panel and no mode change", !panelSent() && (await scrapeMode
 // M3) ارسال خودکار: اولین دکمه فقط توضیح و تأیید دوم می‌دهد، حالت تغییر نمی‌کند
 reset(); await hook(cbOwner("ss:auto"));
 const m3 = owner.at(-1);
-T("M3 auto first press asks second confirmation and does not switch", JSON.stringify(m3?.reply_markup || {}).includes("تأیید دوم") && (await scrapeMode()) === "manual");
+T("M3 auto callback acknowledges before prompt and keeps second confirmation", networkOrder[0] === "answerCallbackQuery" && JSON.stringify(m3?.reply_markup || {}).includes("تأیید دوم") && (await scrapeMode()) === "manual");
 
 // M4) تأیید دوم: حالت خودکار، زمان شروع، و ثبت audit
 const a4 = tokBtn("ss:autoy:"); tick(); reset(); await hook(cbOwner(a4));
@@ -235,7 +236,7 @@ T("M12 mode change does not resend ambiguous post", !groupHas("مبهم دواز
 const longOf = (ch, n) => ch.repeat(n);
 const reviewRow = (id) => q1("SELECT state, reason FROM update_queue WHERE update_id = ?", id);
 const effState = (key) => q1("SELECT state FROM effects WHERE op_key = ?", key)?.state ?? null;
-const lastAnswer = () => answers[answers.length - 1] || "";
+const lastAnswer = () => owner.at(-1)?.text || answers[answers.length - 1] || "";
 
 // R0) برای ادامه‌ی سناریوها: خودکار فعال با توکن
 reset(); await hook(cbOwner("ss:auto")); tick(); const r0t = tokBtn("ss:autoy:"); reset(); await hook(cbOwner(r0t));

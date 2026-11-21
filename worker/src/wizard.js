@@ -1,5 +1,5 @@
 // افزودن مرحله‌به‌مرحله‌ی رویداد، شماره و لینک در DM، و حذف با دکمه (فقط ادمین).
-import { tg, sendMessage } from "./telegram.js";
+import { tg, sendMessage, answerCallback } from "./telegram.js";
 import { audit } from "./admin.js";
 import { parseDateInput, normalizeDigits } from "./jalali.js";
 import { faDate } from "./calendar.js";
@@ -180,7 +180,7 @@ export async function handleCallback(env, cq, ctx = null) {
   const userId = cq.from.id;
   const chatId = cq.message.chat.id;
   const data = cq.data || "";
-  const answer = (text = "") => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text });
+  const answer = (text = "") => answerCallback(env, cq, text);
 
   if (data.startsWith("ed:")) {
     const parts = data.split(":");
@@ -201,8 +201,8 @@ export async function handleCallback(env, cq, ctx = null) {
     if (parts[1] === "f") {
       const [, , type, id, field] = parts;
       if (!EDIT_FIELDS[type] || !EDIT_FIELDS[type][field]) return answer();
-      await saveSession(env, userId, "edit", 0, { type, id, field });
       await answer();
+      await saveSession(env, userId, "edit", 0, { type, id, field });
       return tg(env, "sendMessage", {
         chat_id: chatId,
         text: `مقدار جدید «${EDIT_FIELDS[type][field][0]}» رو بفرست${field === "note" ? " (یا «بدون یادداشت»)" : ""}.`,
@@ -225,11 +225,11 @@ export async function handleCallback(env, cq, ctx = null) {
     if (String(userId) !== String(env.OWNER_ID)) return answer();
     const [, role, id] = data.split(":");
     if (!["full", "content"].includes(role) || !/^\d{5,15}$/.test(id || "")) return answer();
+    await answer();
     await env.DB.prepare("INSERT OR IGNORE INTO admins (user_id, is_owner) VALUES (?, 0)").bind(Number(id)).run();
     await env.DB.prepare("INSERT INTO admin_roles (user_id, role) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET role = excluded.role")
       .bind(Number(id), role).run();
     await audit(env, userId, "admin_add", `${id}:${role}`);
-    await answer("ثبت شد");
     return tg(env, "sendMessage", { chat_id: chatId, text: `ادمین ${id} با سطح ${role === "full" ? "کامل" : "محتوا"} اضافه شد.` });
   }
 
@@ -248,9 +248,9 @@ export async function handleCallback(env, cq, ctx = null) {
         reply_markup: { inline_keyboard: [[{ text: "بله، حذف", callback_data: `rmy:${type}:${id}` }, { text: "نه", callback_data: "w:cancel" }]] },
       });
     }
+    await answer();
     await env.DB.prepare(`DELETE FROM ${table} WHERE id = ?`).bind(Number(id)).run();
     await audit(env, userId, `${type}_remove`, id);
-    await answer("حذف شد");
     return tg(env, "sendMessage", { chat_id: chatId, text: "حذف شد." });
   }
 
@@ -258,13 +258,13 @@ export async function handleCallback(env, cq, ctx = null) {
   // دکمه‌ی لغوِ خود ویزارد: اگر جلسه‌ای نیست (دکمه‌ی قدیمی)، همان پیام «دیگه فعال نیست» را می‌دهد
   if (data === "w:stop") {
     if (!sess) return answer("این جریان دیگه فعال نیست");
-    await clearSession(env, userId);
     await answer();
+    await clearSession(env, userId);
     return tg(env, "sendMessage", { chat_id: chatId, text: "لغو شد." });
   }
   if (data === "w:cancel") {
-    await clearSession(env, userId);
     await answer();
+    await clearSession(env, userId);
     return tg(env, "sendMessage", { chat_id: chatId, text: "لغو شد." });
   }
   if (!sess) return answer("این جریان دیگه فعال نیست");
@@ -276,10 +276,11 @@ export async function handleCallback(env, cq, ctx = null) {
     const { _sid, _lastMid, ...fields } = d;
     // جلسه‌ی قدیمی (قبل از شناسه): کلید پایدار نداره؛ بدون ثبت، دوباره شروع کنه
     if (!_sid) {
+      await answer();
       await clearSession(env, userId);
-      await answer("این جلسه قدیمیه");
       return tg(env, "sendMessage", { chat_id: chatId, text: "این جلسه قدیمی شده؛ دوباره از اول شروع کن." });
     }
+    await answer();
     // کلید پایدار: شناسه‌ی جلسه. retry همون جلسه همون کلید؛ دو جلسه‌ی مستقل با داده‌ی یکسان کلید متفاوت دارن
     const opKey = `wizard:${userId}:${sess.flow}:${_sid}`;
     let eff;
@@ -295,12 +296,10 @@ export async function handleCallback(env, cq, ctx = null) {
     }
     if (!eff.created) {
       await clearSession(env, userId);
-      await answer("قبلاً ثبت شده");
       return tg(env, "sendMessage", { chat_id: chatId, text: "این مورد قبلاً ثبت شده بود." });
     }
     await audit(env, userId, `${sess.flow}_add`, JSON.stringify(fields).slice(0, 300));
     await clearSession(env, userId);
-    await answer("ثبت شد");
     return tg(env, "sendMessage", { chat_id: chatId, text: "ثبت شد." });
   }
 

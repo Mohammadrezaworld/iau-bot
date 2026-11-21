@@ -40,10 +40,11 @@ db.prepare = (sql) => { const st = origPrepare(sql); const b = st.bind; st.bind 
 const ok = (result) => Response.json({ ok: true, result });
 let mid = 1000;
 const G = { sent: [], photos: [], singlePhotos: [], ownerPhotos: [], ownerPhotoFail: false, captions: [], fail: null, quietAfterOne: false, failAt: null, dropToken: null, photoFail: null }; // fail: 'network' | 'refuse' (یک‌بار، برای پیام گروه)
-const owner = []; const answers = []; const edits = []; const alerts = [];
+const owner = []; const answers = []; const edits = []; const alerts = []; const networkOrder = [];
 globalThis.fetch = async (u, o) => {
   const method = String(u).split("/").pop();
   const b = o && o.body ? JSON.parse(o.body) : {};
+  networkOrder.push(method);
   if (method === "answerCallbackQuery") { answers.push(b.text || ""); if (b.show_alert) alerts.push(b.text || ""); return ok(true); }
   if (method === "editMessageText") { edits.push(b); return ok(true); }
   if (method === "getChatMember") return ok({ status: "member" });
@@ -82,7 +83,7 @@ const { prepareBatch, expireBatches } = await import(WORKER + "src/batches.js");
 const secret = await webhookSecret(env);
 let uid = 60000;
 const hook = (u) => W.fetch(new Request("https://x/tg-webhook", { method: "POST", headers: { "x-telegram-bot-api-secret-token": secret }, body: JSON.stringify(u) }), env);
-const cbOwner = (data) => ({ update_id: ++uid, callback_query: { id: "cb" + uid, from: { id: 5 }, data, message: { message_id: 1, chat: { id: 5, type: "private" } } } });
+const cbOwner = (data) => ({ update_id: ++uid, callback_query: { id: "cb" + uid, from: { id: 5 }, data, message: { message_id: 1, chat: { id: 5, type: "private" }, text: "پیش‌نمایش دسته" } } });
 const cbOther = (data) => ({ update_id: ++uid, callback_query: { id: "cb" + uid, from: { id: 77 }, data, message: { message_id: 1, chat: { id: 77, type: "private" } } } });
 const ownerDm = (text) => ({ update_id: ++uid, message: { message_id: ++uid, chat: { id: 5, type: "private" }, from: { id: 5 }, text, date: 1 } });
 const q1 = (sql, ...a) => raw.prepare(sql).get(...a);
@@ -94,7 +95,7 @@ const batchOf = (postText) => q1("SELECT bi.batch_id AS b FROM scrape_batch_item
 const unsent = () => q1("SELECT COUNT(*) AS n FROM posts WHERE sent_at_utc IS NULL").n;
 const batchState = (id) => q1("SELECT state FROM scrape_batches WHERE id = ?", id)?.state;
 const ids = (bid) => qN("SELECT post_id FROM scrape_batch_items WHERE batch_id = ?", bid).map((r) => r.post_id);
-const reset = () => { G.sent.length = 0; G.photos.length = 0; G.singlePhotos.length = 0; G.ownerPhotos.length = 0; owner.length = 0; answers.length = 0; };
+const reset = () => { G.sent.length = 0; G.photos.length = 0; G.singlePhotos.length = 0; G.ownerPhotos.length = 0; owner.length = 0; answers.length = 0; edits.length = 0; alerts.length = 0; networkOrder.length = 0; };
 
 let fails = 0; const T = (n, c) => { console.log((c ? "PASS " : "FAIL ") + n); if (!c) fails++; };
 
@@ -136,7 +137,7 @@ T("E all posts of batch marked sent", ids(B1).every((id) => q1("SELECT sent_at_u
 T("E group got text messages (channel header + posts)", G.sent.length >= 1 && G.sent.some((m) => m.text.includes("telegram:test_channel_a")) && G.sent.some((m) => m.text.includes("bale:test_channel_b")));
 T("E format: long post in expandable blockquote, first line bold", G.sent.some((m) => m.text.includes('<blockquote expandable><b>عنوان اول</b>')));
 T("E single photo sent via sendPhoto once (no one-item album)", G.singlePhotos.length === 1 && G.photos.length === 0);
-T("E answer shows result", answers.some((t) => t.includes("ارسال شد")));
+T("E callback acknowledges before the first Telegram send", networkOrder[0] === "answerCallbackQuery" && networkOrder.includes("sendMessage"));
 
 // F) دوبار کلیک هم‌زمان روی همان دسته: هر بخش یک بار
 reset();
@@ -150,12 +151,12 @@ addPost("telegram:test_channel_a", "پست توقف");
 await prepareBatch(env); const G1 = batchOf("پست توقف");
 raw.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('scrape_paused', '1')").run();
 reset(); await hook(cbOwner(`sb:s:${G1}`));
-T("G paused: approval refused, nothing sent, batch still pending", G.sent.length === 0 && batchState(G1) === "pending" && answers.some((t) => t.includes("متوقف")));
+T("G paused: approval refused, nothing sent, result shown under preview", G.sent.length === 0 && batchState(G1) === "pending" && edits.at(-1)?.text.includes("متوقف"));
 raw.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('scrape_paused', '0')").run();
 
 // H) ساعت سکوت: تأیید رد می‌شه
 atTehranHour(3); reset(); await hook(cbOwner(`sb:s:${G1}`));
-T("H quiet hours: approval refused, nothing sent", G.sent.length === 0 && batchState(G1) === "pending" && answers.some((t) => t.includes("سکوت")));
+T("H quiet hours: approval refused, nothing sent, result shown under preview", G.sent.length === 0 && batchState(G1) === "pending" && edits.at(-1)?.text.includes("سکوت"));
 atTehranHour(12);
 
 // I) رد کردن: پست‌ها دیگه پیشنهاد نمی‌شن
@@ -171,7 +172,7 @@ addPost("telegram:test_channel_a", "پست نتیجه");
 await prepareBatch(env); const I2 = batchOf("پست نتیجه");
 reset(); edits.length = 0; alerts.length = 0;
 await hook({ update_id: ++uid, callback_query: { id: "cb" + uid, from: { id: 5 }, data: `sb:r:${I2}`, message: { message_id: 77, chat: { id: 5, type: "private" }, text: "پیش‌نمایش تست" } } });
-T("I2 reject edits preview with result and no keyboard", edits.length === 1 && edits[0].message_id === 77 && edits[0].text.startsWith("پیش‌نمایش تست") && edits[0].text.includes("نتیجه:") && !edits[0].reply_markup);
+T("I2 reject shows result under preview after the early ack", edits.length === 1 && edits[0].message_id === 77 && edits[0].text.startsWith("پیش‌نمایش تست") && edits[0].text.includes("نتیجه:") && !edits[0].reply_markup && networkOrder[0] === "answerCallbackQuery");
 T("I2 reject answers callback without alert", answers.length === 1 && alerts.length === 0);
 
 // J) انقضا: دسته‌ی بی‌جواب آزاد می‌شه و دوباره پیشنهاد می‌شه؛ تأیید دیرهنگام رد می‌شه
@@ -216,6 +217,7 @@ T("K ambiguous unit: update needs_review(ambiguous)", kUpdRow && kUpdRow.state =
 const kSent = ids(K1).filter((id) => q1("SELECT sent_at_utc AS s FROM posts WHERE id = ?", id).s !== null).length;
 T(`K first unit sent, not all (sent posts=${kSent}/${ids(K1).length})`, kSent >= 1 && kSent < ids(K1).length);
 T("K group got exactly one message before the ambiguous one", G.sent.length - sentBefore === 1);
+T("K ambiguous result remains visible on the preview after early callback ack", edits.some((e) => e.text.includes("نتیجه نامشخص؛ در /review دیده می\u200cشه")));
 // مالک: اثر انجام‌شده → بخش نامشخص بسته، پست‌هاش ارسال‌شده، بدون ارسال مجدد
 reset(); await hook(ownerDm(`/resolve_update ${kUpd.update_id} applied`));
 T("K owner applied: unit posts marked sent, nothing re-sent", ids(K1).every((id) => q1("SELECT sent_at_utc AS s FROM posts WHERE id = ?", id).s !== null) && G.sent.length === 0);
@@ -418,7 +420,7 @@ await hook(cbOwner(`sb:s:${Z5_B}`));
 reset(); await hook(cbOther(`sb:c:${Z5_B}`));
 T("Z5 non-owner continue: silent, nothing sent", G.sent.length === 0 && batchState(Z5_B) === "sending");
 atTehranHour(3); reset(); await hook(cbOwner(`sb:c:${Z5_B}`));
-T("Z5 owner continue in quiet hours: refused, nothing sent", G.sent.length === 0 && batchState(Z5_B) === "sending" && answers.some((t) => t.includes("سکوت")));
+T("Z5 owner continue in quiet hours: refused, nothing sent, result shown under preview", G.sent.length === 0 && batchState(Z5_B) === "sending" && edits.at(-1)?.text.includes("سکوت"));
 atTehranHour(12); reset(); await hook(cbOwner(`sb:c:${Z5_B}`));
 T("Z5 owner continue at noon: remaining units sent once", G.sent.length === 2 && batchState(Z5_B) === "sent");
 
