@@ -36,6 +36,7 @@ const SUITES = [
   "telegram_workflow.mjs", // ورک‌فلو تلگرام فقط با اجرای دستی و بدون schedule داخلی
   "d1_indexes.mjs", // ایندکس‌های کوئری‌های پرخواندن D1: بدون اسکن کامل جدول
   "metro_thursday.mjs", // مترو: پنجشنبه‌ها جدول جمعه/تعطیلی
+  "deploy_workflow_policy.mjs", // deploy production دستی و با تأیید صریح
 ];
 
 let failed = 0;
